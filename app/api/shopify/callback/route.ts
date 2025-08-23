@@ -5,12 +5,12 @@ export const runtime = 'nodejs';
 export const fetchCache = 'force-no-store';
 
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto"; // ⟵ add
+import crypto from "crypto";
+import { sql } from "../../../../lib/db"; // <-- use this relative path
 
 const SHOPIFY_TOKEN_URL = (shop: string) =>
   `https://${shop}/admin/oauth/access_token`;
 
-// ⟵ add
 function verifyHmac(params: URLSearchParams, secret: string) {
   const given = params.get("hmac") || "";
   const copy = new URLSearchParams(params);
@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Missing shop or code" }, { status: 400 });
     }
 
-    // ⟵ add: verify HMAC before exchanging the code
+    // Verify HMAC
     if (!verifyHmac(url.searchParams, process.env.SHOPIFY_API_SECRET!)) {
       return NextResponse.json({ ok: false, error: "Invalid HMAC" }, { status: 400 });
     }
@@ -58,11 +58,23 @@ export async function GET(req: NextRequest) {
 
     const data = (await resp.json()) as { access_token: string; scope: string };
     const accessToken = data.access_token;
+    const scope = data.scope ?? null;
 
-    // DEV ONLY: store token in httpOnly cookies so we can confirm end‑to‑end
+    // Persist to Neon (UPSERT by unique shop_domain)
+    await sql/* sql */`
+      INSERT INTO shops (shop_domain, access_token, scope)
+      VALUES (${shop}, ${accessToken}, ${scope})
+      ON CONFLICT (shop_domain)
+      DO UPDATE SET
+        access_token = EXCLUDED.access_token,
+        scope        = EXCLUDED.scope,
+        updated_at   = NOW();
+    `;
+
+    // Keep simple cookies for dev-verification
     const res = NextResponse.redirect(new URL("/connected", url.origin));
-    res.cookies.set("pm_shop", shop,   { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
-    res.cookies.set("pm_token", accessToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
+    res.cookies.set("pm_shop", shop,        { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
+    res.cookies.set("pm_token", accessToken,{ httpOnly: true, secure: true, sameSite: "lax", path: "/" });
     return res;
   } catch (err) {
     console.error("[SHOPIFY] callback error", err);
