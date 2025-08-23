@@ -1,9 +1,15 @@
 // lib/db.ts
 import { neon } from "@neondatabase/serverless";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("Missing DATABASE_URL in environment variables");
+// Vercel's Neon integration may expose one of these names.
+// Pick the first one that exists.
+const DB_URL =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.NEON_DATABASE_URL;
+
+if (!DB_URL) {
+  throw new Error("Missing DATABASE_URL / POSTGRES_URL / NEON_DATABASE_URL");
 }
 
-// Neon client (reusable across your app)
-export const sql = neon(process.env.DATABASE_URL);
+export const sql = neon(DB_URL);
