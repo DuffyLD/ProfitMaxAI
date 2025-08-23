@@ -1,4 +1,9 @@
 // app/api/shopify/callback/route.ts
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+export const runtime = 'nodejs';
+export const fetchCache = 'force-no-store';
+
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto"; // ⟵ add
 
