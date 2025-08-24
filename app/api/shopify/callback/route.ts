@@ -6,22 +6,25 @@ export const fetchCache = 'force-no-store';
 
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { getSql } from "../../../../lib/db"; // <-- lazy Neon getter
+import { getSql } from "../../../../lib/db";
 
 const SHOPIFY_TOKEN_URL = (shop: string) =>
   `https://${shop}/admin/oauth/access_token`;
 
+// Build the message exactly as sent by Shopify (sorted, no decode)
 function verifyHmac(params: URLSearchParams, secret: string) {
   const given = params.get("hmac") || "";
-  const copy = new URLSearchParams(params);
-  copy.delete("hmac");
-  const message = decodeURIComponent(copy.toString());
+  const entries = [...params.entries()]
+    .filter(([k]) => k !== "hmac" && k !== "signature")
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+  const message = entries.map(([k, v]) => `${k}=${v}`).join("&");
   const digest = crypto.createHmac("sha256", secret).update(message).digest("hex");
-  try {
-    return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(given));
-  } catch {
-    return false;
-  }
+
+  // Constant‑time compare with equal length
+  const a = Buffer.from(digest, "utf8");
+  const b = Buffer.from(given, "utf8");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 export async function GET(req: NextRequest) {
@@ -34,7 +37,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Missing shop or code" }, { status: 400 });
     }
 
-    // Verify HMAC
     if (!verifyHmac(url.searchParams, process.env.SHOPIFY_API_SECRET!)) {
       return NextResponse.json({ ok: false, error: "Invalid HMAC" }, { status: 400 });
     }
@@ -56,12 +58,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, error: "Token exchange failed" }, { status: 400 });
     }
 
-    const data = (await resp.json()) as { access_token: string; scope: string };
+    const data = (await resp.json()) as { access_token: string; scope?: string };
     const accessToken = data.access_token;
     const scope = data.scope ?? null;
 
-    // --- DB write (lazy-init Neon client) ---
-    const sql = getSql(); // <-- initialize when needed (runtime only)
+    // ✅ GET the Neon client and persist (UPSERT)
+    const sql = getSql();
     await sql/* sql */`
       INSERT INTO shops (shop_domain, access_token, scope)
       VALUES (${shop}, ${accessToken}, ${scope})
@@ -71,12 +73,11 @@ export async function GET(req: NextRequest) {
         scope        = EXCLUDED.scope,
         updated_at   = NOW();
     `;
-    // --- end DB write ---
 
-    // Keep simple cookies for dev-verification
+    // Dev cookies so /connected works
     const res = NextResponse.redirect(new URL("/connected", url.origin));
-    res.cookies.set("pm_shop", shop,        { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
-    res.cookies.set("pm_token", accessToken,{ httpOnly: true, secure: true, sameSite: "lax", path: "/" });
+    res.cookies.set("pm_shop", shop, { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
+    res.cookies.set("pm_token", accessToken, { httpOnly: true, secure: true, sameSite: "lax", path: "/" });
     return res;
   } catch (err) {
     console.error("[SHOPIFY] callback error", err);
