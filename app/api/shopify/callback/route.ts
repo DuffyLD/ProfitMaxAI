@@ -6,7 +6,7 @@ export const fetchCache = 'force-no-store';
 
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { sql } from "../../../../lib/db"; // <-- use this relative path
+import { getSql } from "../../../../lib/db";
 
 const SHOPIFY_TOKEN_URL = (shop: string) =>
   `https://${shop}/admin/oauth/access_token`;
