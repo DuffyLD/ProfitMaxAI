@@ -6,7 +6,7 @@ export const fetchCache = 'force-no-store';
 
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { getSql } from "../../../../lib/db";
+import { getSql } from "../../../../lib/db"; // <-- lazy Neon getter
 
 const SHOPIFY_TOKEN_URL = (shop: string) =>
   `https://${shop}/admin/oauth/access_token`;
@@ -60,7 +60,8 @@ export async function GET(req: NextRequest) {
     const accessToken = data.access_token;
     const scope = data.scope ?? null;
 
-    // Persist to Neon (UPSERT by unique shop_domain)
+    // --- DB write (lazy-init Neon client) ---
+    const sql = getSql(); // <-- initialize when needed (runtime only)
     await sql/* sql */`
       INSERT INTO shops (shop_domain, access_token, scope)
       VALUES (${shop}, ${accessToken}, ${scope})
@@ -70,6 +71,7 @@ export async function GET(req: NextRequest) {
         scope        = EXCLUDED.scope,
         updated_at   = NOW();
     `;
+    // --- end DB write ---
 
     // Keep simple cookies for dev-verification
     const res = NextResponse.redirect(new URL("/connected", url.origin));
