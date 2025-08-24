@@ -1,15 +1,23 @@
-export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
-export const fetchCache = 'force-no-store';
-
+// app/api/debug-env/route.ts
 import { NextResponse } from "next/server";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function GET() {
-  const v = process.env.DATABASE_URL;
-  return NextResponse.json({
-    VERCEL_ENV: process.env.VERCEL_ENV || null,
-    DATABASE_URL_PRESENT: Boolean(v),
-    DATABASE_URL_LENGTH: v ? v.length : 0
-  });
+  const keys = [
+    "DATABASE_URL",
+    "NEON_DATABASE_URL",
+    "POSTGRES_URL",
+    "POSTGRES_PRISMA_URL",
+    "PGSTRING",
+    "VERCEL_ENV",
+  ] as const;
+
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    const v = process.env[k];
+    out[k] = v ? (k === "VERCEL_ENV" ? v : { present: true, length: v.length }) : { present: false };
+  }
+  return NextResponse.json(out);
 }
