@@ -2,8 +2,6 @@
 import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 
 let _sql: NeonQueryFunction<any[]> | null = null;
-
-/** Get a singleton Neon client, initialized only when first used (runtime). */
 export function getSql() {
   if (!_sql) {
     const url = process.env.DATABASE_URL;
