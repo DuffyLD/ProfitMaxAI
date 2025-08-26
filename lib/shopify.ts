@@ -3,13 +3,14 @@ export const SHOPIFY_API_VERSION = "2024-07";
 
 import { getSql } from "./db";
 
-// -------- 1) Parse cookies (same as before) --------
+/* ----------------------------- 1) Cookies ----------------------------- */
 export function getShopAndTokenFromCookies(cookieHeader?: string): {
   shop: string;
   token: string;
 } {
   if (!cookieHeader) throw new Error("No cookies present");
 
+  // tiny cookie parser
   const map = new Map<string, string>();
   for (const part of cookieHeader.split(";")) {
     const [rawK, ...rest] = part.trim().split("=");
@@ -24,37 +25,49 @@ export function getShopAndTokenFromCookies(cookieHeader?: string): {
   return { shop, token };
 }
 
-// -------- 2) Read latest shop+token from Neon --------
+/* -------- 2) Read latest shop+token from Neon (normalize result) -------- */
 export async function getCurrentShopAndToken(): Promise<{ shop: string; token: string }> {
   const sql = getSql();
-  const rows: any[] = await sql/* sql */`
+
+  // Neon can return an array of rows OR a "full results" object with .rows
+  const result: any = await sql/* sql */`
     SELECT shop_domain, access_token
     FROM shops
     ORDER BY id DESC
     LIMIT 1
   `;
-  if (!Array.isArray(rows) || rows.length === 0) {
+
+  const rows: any[] = Array.isArray(result)
+    ? result
+    : Array.isArray(result?.rows)
+      ? result.rows
+      : [];
+
+  if (rows.length === 0) {
     throw new Error("No DB row for shop");
   }
-  return { shop: rows[0].shop_domain as string, token: rows[0].access_token as string };
+
+  return {
+    shop: rows[0].shop_domain as string,
+    token: rows[0].access_token as string,
+  };
 }
 
-// -------- 3) NEW: unified helper with cookie→DB fallback --------
+/* -------- 3) Unified helper with cookie → DB fallback -------- */
 export async function getShopAndTokenWithFallback(cookieHeader?: string) {
   try {
     if (cookieHeader) return getShopAndTokenFromCookies(cookieHeader);
   } catch {
-    // ignore and fall through to DB
+    // ignore cookie errors and fall back to DB
   }
-  // fallback to DB (so things work even without cookies)
   return getCurrentShopAndToken();
 }
 
-// -------- 4) Minimal Shopify Admin GET helper --------
+/* -------- 4) Minimal Shopify Admin GET helper -------- */
 export async function shopifyAdminGET<T>(
   shop: string,
   token: string,
-  path: string,
+  path: string, // e.g. "shop.json" or "products/count.json"
   query?: Record<string, string | number | boolean>
 ): Promise<T> {
   const url = new URL(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/${path}`);
