@@ -1,56 +1,60 @@
 // app/connected/page.tsx
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-async function getJSON(path: string) {
-  const res = await fetch(path, { cache: "no-store" });
-  try {
-    return await res.json();
-  } catch {
-    return { ok: false, error: `Bad JSON from ${path}` };
+type ApiOk<T> = { ok: true } & T;
+type ApiErr = { ok: false; error: string };
+
+async function grab<T>(path: string): Promise<ApiOk<T> | ApiErr> {
+  // Use APP_BASE_URL so server rendering knows the absolute URL
+  const base = process.env.APP_BASE_URL?.replace(/\/+$/, "") || "";
+  const url = `${base}${path}`;
+  const res = await fetch(url, { cache: "no-store" });
+
+  let data: any = null;
+  try { data = await res.json(); } catch { /* no-op */ }
+
+  if (!res.ok || !data || data.ok === false) {
+    // Normalize an error shape
+    const msg = (data && data.error) || `HTTP ${res.status}`;
+    return { ok: false, error: msg };
   }
+  return data as ApiOk<T>;
 }
 
 export default async function Connected() {
-  const [store, count] = await Promise.all([
-    getJSON("/api/shopify/store"),
-    getJSON("/api/shopify/products-count"),
+  const [storeRes, countRes] = await Promise.all([
+    grab<{ shop: string; name: string; plan: string }>("/api/shopify/store"),
+    grab<{ shop: string; count: number }>("/api/shopify/products-count"),
   ]);
 
   return (
     <main className="p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Connected ✅</h1>
+      <h1 className="text-2xl font-semibold">Shop connected ✅</h1>
 
-      {/* Store card */}
-      <section className="rounded-lg border p-4">
-        <h2 className="font-medium mb-2">Store</h2>
-        {!store?.ok ? (
-          <pre className="text-sm text-red-600">
-            {store?.error ?? "Unknown store error"}
-          </pre>
+      <section className="space-y-2">
+        <h2 className="text-lg font-medium">Store info</h2>
+        {"ok" in storeRes && storeRes.ok ? (
+          <ul className="list-disc pl-6">
+            <li><b>Shop domain:</b> {storeRes.shop}</li>
+            <li><b>Store name:</b> {storeRes.name}</li>
+            <li><b>Plan:</b> {storeRes.plan}</li>
+          </ul>
         ) : (
-          <div className="text-sm space-y-1">
-            <div><span className="opacity-70">Name:</span> {store.name}</div>
-            <div><span className="opacity-70">Domain:</span> {store.shop}</div>
-            <div><span className="opacity-70">Plan:</span> {store.plan}</div>
-          </div>
+          <p className="text-red-600">Error loading store: {(storeRes as ApiErr).error}</p>
         )}
       </section>
 
-      {/* Products card */}
-      <section className="rounded-lg border p-4">
-        <h2 className="font-medium mb-2">Products</h2>
-        {!count?.ok ? (
-          <pre className="text-sm text-red-600">
-            {count?.error ?? "Unknown products error"}
-          </pre>
+      <section className="space-y-2">
+        <h2 className="text-lg font-medium">Products</h2>
+        {"ok" in countRes && countRes.ok ? (
+          <p>Product count: <b>{countRes.count}</b></p>
         ) : (
-          <div className="text-sm">
-            <span className="opacity-70">Total:</span> {count.count}
-          </div>
+          <p className="text-red-600">Error loading products: {(countRes as ApiErr).error}</p>
         )}
       </section>
 
-      <a className="underline text-sm" href="/">Back to home</a>
+      <a className="underline" href="/">Back to home</a>
     </main>
   );
 }
