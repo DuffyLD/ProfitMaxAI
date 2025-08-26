@@ -1,17 +1,16 @@
-// app/api/shopify/store/route.ts
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const fetchCache = "force-no-store";
 
 import { NextRequest, NextResponse } from "next/server";
-import { getShopAndTokenFromCookies, shopifyAdminGET } from "../../../../lib/shopify";
+import { getShopAndTokenWithFallback, shopifyAdminGET } from "../../../../lib/shopify";
 
 export async function GET(req: NextRequest) {
   try {
-    const { shop, token } = await getShopAndTokenFromCookies(req.headers.get("cookie") || undefined);
+    const cookieHeader = req.headers.get("cookie") || undefined;
+    const { shop, token } = await getShopAndTokenWithFallback(cookieHeader);
 
-    // Lightweight “who am I”
     type ShopResp = { shop: { name: string; email: string; plan_display_name: string } };
     const data = await shopifyAdminGET<ShopResp>(shop, token, "shop.json");
 
