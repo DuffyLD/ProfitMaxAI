@@ -1,62 +1,55 @@
 // app/connected/page.tsx
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+'use client';
 
-import React from "react";
+import { useEffect, useState } from 'react';
 
-async function fetchJSON<T>(path: string): Promise<T> {
-  const res = await fetch(path, { cache: "no-store" });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`${path} failed: ${res.status} ${txt}`);
-  }
-  return (await res.json()) as T;
-}
+type StoreResp = { ok: true; shop: string; name: string; plan: string } | { ok: false; error: string };
+type CountResp = { ok: true; shop: string; count: number } | { ok: false; error: string };
 
-export default async function Connected() {
-  let storeBlock: React.ReactNode = null;
-  let productsBlock: React.ReactNode = null;
+export default function Connected() {
+  const [store, setStore] = useState<StoreResp | null>(null);
+  const [count, setCount] = useState<CountResp | null>(null);
 
-  try {
-    const store = await fetchJSON<{ ok: boolean; shop: string; name: string; plan: string }>("/api/shopify/store");
-    storeBlock = (
-      <ul>
-        <li>Shop: <b>{store.shop}</b></li>
-        <li>Name: <b>{store.name}</b></li>
-        <li>Plan: <b>{store.plan}</b></li>
-      </ul>
-    );
-  } catch (e: any) {
-    storeBlock = <p>Error loading store: {String(e.message || e)}</p>;
-  }
+  useEffect(() => {
+    // fetch from the browser so cookies are included
+    fetch('/api/shopify/store', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.json())
+      .then(setStore)
+      .catch(e => setStore({ ok: false, error: String(e.message || e) } as any));
 
-  try {
-    const pc = await fetchJSON<{ ok: boolean; shop: string; count: number }>("/api/shopify/products-count");
-    productsBlock = (
-      <ul>
-        <li>Shop: <b>{pc.shop}</b></li>
-        <li>Product count: <b>{pc.count}</b></li>
-      </ul>
-    );
-  } catch (e: any) {
-    productsBlock = <p>Error loading products: {String(e.message || e)}</p>;
-  }
+    fetch('/api/shopify/products-count', { credentials: 'include', cache: 'no-store' })
+      .then(r => r.json())
+      .then(setCount)
+      .catch(e => setCount({ ok: false, error: String(e.message || e) } as any));
+  }, []);
 
   return (
-    <main className="p-6 space-y-6">
-      <h1 className="text-3xl font-bold">Shop connected ✅</h1>
+    <main style={{ padding: 24, lineHeight: 1.6 }}>
+      <h1 style={{ fontSize: 42, fontWeight: 800 }}>
+        Shop connected <span style={{ fontSize: 36 }}>✅</span>
+      </h1>
 
-      <section>
-        <h2 className="text-xl font-semibold">Store info</h2>
-        {storeBlock}
+      <section style={{ marginTop: 24 }}>
+        <h2 style={{ fontSize: 32, fontWeight: 700 }}>Store info</h2>
+        {!store && <p>Loading…</p>}
+        {store && store.ok && (
+          <div>
+            <div><b>Shop:</b> {store.shop}</div>
+            <div><b>Name:</b> {store.name}</div>
+            <div><b>Plan:</b> {store.plan}</div>
+          </div>
+        )}
+        {store && !store.ok && <p style={{ color: 'crimson' }}>Error loading store: {store.error}</p>}
       </section>
 
-      <section>
-        <h2 className="text-xl font-semibold">Products</h2>
-        {productsBlock}
+      <section style={{ marginTop: 24 }}>
+        <h2 style={{ fontSize: 32, fontWeight: 700 }}>Products</h2>
+        {!count && <p>Loading…</p>}
+        {count && count.ok && <p>Product count: {count.count}</p>}
+        {count && !count.ok && <p style={{ color: 'crimson' }}>Error loading products: {count.error}</p>}
       </section>
 
-      <a className="underline" href="/">Back to home</a>
+      <p style={{ marginTop: 24 }}><a href="/">Back to home</a></p>
     </main>
   );
 }
