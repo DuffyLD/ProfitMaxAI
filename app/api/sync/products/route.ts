@@ -6,105 +6,114 @@ export const fetchCache = "force-no-store";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "../../../../lib/db";
-import { getShopAndTokenWithFallback, SHOPIFY_API_VERSION } from "../../../../lib/shopify";
+import {
+  getShopAndTokenWithFallback,
+  SHOPIFY_API_VERSION,
+} from "../../../../lib/shopify";
 
-type ShopifyProduct = {
-  id: number;
-  title: string;
-  status?: string;
-  vendor?: string;
-  product_type?: string;
-  tags?: string;
-  created_at?: string;
-  updated_at?: string;
-};
-
-async function fetchProductsPage(shop: string, token: string, pageInfo?: string) {
-  const base = new URL(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/products.json`);
-  base.searchParams.set("limit", "250");
-  if (pageInfo) base.searchParams.set("page_info", pageInfo);
-
-  const res = await fetch(base.toString(), {
-    method: "GET",
-    headers: {
-      "X-Shopify-Access-Token": token,  // ← IMPORTANT
-      "Accept": "application/json",
-    },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Shopify products fetch failed: ${res.status} ${body}`);
-  }
-
-  const json = (await res.json()) as { products: ShopifyProduct[] };
-  const link = res.headers.get("link") || "";
-  // parse next page_info (if present)
-  let next: string | null = null;
-  // Shopify's Link header format: <...page_info=XYZ>; rel="next"
-  const m = link.match(/<[^>]*[?&]page_info=([^&>]+)[^>]*>;\s*rel="next"/i);
-  if (m) next = decodeURIComponent(m[1]);
-  return { products: json.products, nextPageInfo: next };
-}
-
+/**
+ * Minimal Shopify REST pagination (cursor via Link header).
+ * We fetch products in pages of 250 and upsert them into Neon.
+ *
+ * Assumes your `products` table has at least:
+ *   shop_domain TEXT
+ *   product_id  BIGINT
+ *   title       TEXT
+ *   updated_at_shop TIMESTAMPTZ
+ * and a unique constraint on (shop_domain, product_id).
+ */
 export async function GET(req: NextRequest) {
   try {
     const sql = getSql();
-    const { shop, token } = await getShopAndTokenWithFallback();
 
-    const dry = req.nextUrl.searchParams.get("dry") === "1"; // optional "dry run"
+    // IMPORTANT: prefer cookie token (fresh), fall back to DB only if needed
+    const { shop, token } = await getShopAndTokenWithFallback(
+      req.headers.get("cookie") || undefined
+    );
+
+    const isDry = req.nextUrl.searchParams.get("dry") === "1";
+
+    let url = new URL(
+      `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/products.json`
+    );
+    url.searchParams.set("limit", "250");
+    // keep payload small; add more fields later as we expand schema
+    url.searchParams.set("fields", "id,title,updated_at");
+
     let inserted = 0;
-    let pageInfo: string | undefined;
+    let pageCount = 0;
 
-    do {
-      const { products, nextPageInfo } = await fetchProductsPage(shop, token, pageInfo);
-      pageInfo = nextPageInfo || undefined;
+    while (true) {
+      pageCount++;
+      if (pageCount > 40) break; // hard stop to avoid infinite loops
 
-      if (!dry && products.length) {
-        // upsert (dedupe by shop_domain + product_id)
-        await sql/* sql */`
-          INSERT INTO products (
-            shop_domain, product_id, title, status, vendor, product_type, tags, created_at_shop, updated_at_shop
-          )
-          SELECT
-            ${shop},
-            p.id,
-            p.title,
-            COALESCE(p.status, 'active'),
-            COALESCE(p.vendor, ''),
-            COALESCE(p.product_type, ''),
-            COALESCE(p.tags, ''),
-            to_timestamp(extract(epoch from NOW())), -- fallback if missing
-            to_timestamp(extract(epoch from NOW()))
-          FROM jsonb_to_recordset(${JSON.stringify(products)}::jsonb) as p(
-            id bigint,
-            title text,
-            status text,
-            vendor text,
-            product_type text,
-            tags text,
-            created_at text,
-            updated_at text
-          )
-          ON CONFLICT (shop_domain, product_id) DO UPDATE SET
-            title = EXCLUDED.title,
-            status = EXCLUDED.status,
-            vendor = EXCLUDED.vendor,
-            product_type = EXCLUDED.product_type,
-            tags = EXCLUDED.tags,
-            updated_at_shop = EXCLUDED.updated_at_shop
-        `;
+      const res = await fetch(url.toString(), {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Accept": "application/json",
+        },
+        cache: "no-store",
+      });
+
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(
+          `Shopify products fetch failed: ${res.status} ${text}`
+        );
       }
 
-      inserted += products.length;
-      // Safety break for very large stores during early testing:
-      if (inserted > 2000) break;
-    } while (pageInfo);
+      const data = JSON.parse(text) as {
+        products: { id: number; title: string; updated_at: string }[];
+      };
 
-    return NextResponse.json({ ok: true, shop, inserted, dry });
+      // Upsert rows
+      for (const p of data.products) {
+        if (!isDry) {
+          await sql/* sql */`
+            INSERT INTO products (shop_domain, product_id, title, updated_at_shop)
+            VALUES (${shop}, ${p.id}, ${p.title}, ${p.updated_at})
+            ON CONFLICT (shop_domain, product_id)
+            DO UPDATE SET
+              title = EXCLUDED.title,
+              updated_at_shop = EXCLUDED.updated_at_shop;
+          `;
+        }
+        inserted++;
+      }
+
+      // Parse cursor pagination from Link header
+      const link = res.headers.get("link") || res.headers.get("Link");
+      if (!link) break;
+
+      const nextMatch = link
+        .split(",")
+        .map((s) => s.trim())
+        .find((s) => s.endsWith('rel="next"'));
+
+      if (!nextMatch) break;
+
+      // Extract page_info from the <...> URL
+      const urlMatch = nextMatch.match(/<([^>]+)>/);
+      if (!urlMatch) break;
+
+      const nextUrl = new URL(urlMatch[1]);
+      const pageInfo = nextUrl.searchParams.get("page_info");
+      if (!pageInfo) break;
+
+      // Build next request URL with our preferred fields/limit
+      url = new URL(
+        `https://${shop}/admin/api/${SHOPIFY_API_VERSION}/products.json`
+      );
+      url.searchParams.set("limit", "250");
+      url.searchParams.set("fields", "id,title,updated_at");
+      url.searchParams.set("page_info", pageInfo);
+    }
+
+    return NextResponse.json({ ok: true, shop, inserted, dry: isDry || false });
   } catch (e: any) {
-    console.error(e);
-    return NextResponse.json({ ok: false, error: String(e.message || e) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: String(e.message || e) },
+      { status: 500 }
+    );
   }
 }
