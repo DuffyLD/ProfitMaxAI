@@ -9,8 +9,9 @@ import { getShopAndTokenWithFallback } from "../../../../lib/shopify";
 
 export async function GET(req: NextRequest) {
   try {
+    // IMPORTANT: prefer the fresh cookie token, fall back to DB only if needed
     const { shop, token } = await getShopAndTokenWithFallback(
-      req.headers.get("cookie") || undefined    // ← pass cookies
+      req.headers.get("cookie") || undefined
     );
 
     const url = `https://${shop}/admin/oauth/access_scopes.json`;
@@ -26,6 +27,9 @@ export async function GET(req: NextRequest) {
     if (!res.ok) throw new Error(`Scopes check failed: ${res.status} ${text}`);
     return NextResponse.json({ ok: true, shop, raw: JSON.parse(text) });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e.message || e) }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: String(e.message || e) },
+      { status: 500 }
+    );
   }
 }
