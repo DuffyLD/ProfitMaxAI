@@ -5,12 +5,12 @@ export const revalidate = 0;
 
 import { NextResponse } from "next/server";
 import { getSql } from "../../../../lib/db";
-import { getShopAndTokenWithFallback } from "../../../../lib/shopify";
+import { getShopAndTokenFromCookies } from "../../../../lib/shopify";
 
 export async function GET() {
   try {
+    const { shop } = getShopAndTokenFromCookies("");
     const sql = getSql();
-    const { shop } = await getShopAndTokenWithFallback();
     const rows = await sql/* sql */`
       SELECT COUNT(*)::int AS cnt
       FROM variants
