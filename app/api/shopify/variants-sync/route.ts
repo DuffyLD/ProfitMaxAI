@@ -6,14 +6,17 @@ export const fetchCache = "force-no-store";
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "../../../../lib/db";
-import { getShopAndTokenWithFallback, shopifyAdminGET, SHOPIFY_API_VERSION } from "../../../../lib/shopify";
+import {
+  getShopAndTokenWithFallback,
+  shopifyAdminGET,
+} from "../../../../lib/shopify";
 
 type ShopifyVariant = {
   id: number;
   product_id: number;
-  title: string | null;
-  sku: string | null;
-  price: string | null;
+  title?: string | null;
+  sku?: string | null;
+  price?: string | null;
   compare_at_price?: string | null;
   inventory_quantity?: number | null;
   inventory_policy?: string | null;
@@ -34,90 +37,50 @@ type ShopifyProduct = {
 
 type ProductsResp = { products: ShopifyProduct[] };
 
-async function fetchProductsPage(
+// Use since_id pagination via the same helper (consistent auth headers)
+async function fetchProductsBatch(
   shop: string,
   token: string,
-  pageInfo?: string
-): Promise<{ items: ShopifyProduct[]; nextPageInfo?: string }> {
-  const path = "products.json";
-  const baseQuery: Record<string, string | number> = {
-    limit: 250,                                 // Shopify max per page
+  sinceId?: number
+): Promise<ShopifyProduct[]> {
+  const query: Record<string, string | number> = {
+    limit: 250,
     fields: "id,title,updated_at,created_at,variants",
   };
+  if (sinceId && sinceId > 0) query.since_id = sinceId;
 
-  // page_info pagination per Shopify REST
-  const query = { ...baseQuery, ...(pageInfo ? { page_info: pageInfo } : {}) };
-
-  // We need the Link header for next page_info; use the raw fetch helper path
-  const url = new URL(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/${path}`);
-  Object.entries(query).forEach(([k, v]) => url.searchParams.set(k, String(v)));
-
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      "X-Shopify-Access-Token": token,
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-    },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Shopify products fetch failed: ${res.status} ${text}`);
-  }
-
-  const data = (await res.json()) as ProductsResp;
-
-  // Parse Link header for next page_info
-  const link = res.headers.get("link") || res.headers.get("Link");
-  let next: string | undefined;
-  if (link) {
-    // Format: <https://...page_info=XYZ>; rel="next", <...>; rel="previous"
-    const m = link.split(",").find(s => s.includes('rel="next"'));
-    if (m) {
-      const urlPart = m.split(";")[0].trim();
-      const href = urlPart.slice(1, -1); // remove <>
-      const u = new URL(href);
-      const pi = u.searchParams.get("page_info");
-      if (pi) next = pi;
-    }
-  }
-
-  return { items: data.products || [], nextPageInfo: next };
+  const data = await shopifyAdminGET<ProductsResp>(shop, token, "products.json", query);
+  return data.products || [];
 }
 
 export async function GET(req: NextRequest) {
   try {
     const sql = getSql();
-    const { shop, token } = await getShopAndTokenWithFallback(req.headers.get("cookie") || undefined);
+    const { shop, token } = await getShopAndTokenWithFallback(
+      req.headers.get("cookie") || undefined
+    );
 
-    // Dry run?
     const dry = (new URL(req.url).searchParams.get("dry") || "true").toLowerCase() !== "false";
-    let totalInserted = 0;
+    let totalUpserts = 0;
 
-    let pageInfo: string | undefined = undefined;
+    let lastId = 0;
     let page = 0;
 
-    do {
+    while (true) {
       page++;
-      const { items, nextPageInfo } = await fetchProductsPage(shop, token, pageInfo);
-      pageInfo = nextPageInfo;
-
+      const items = await fetchProductsBatch(shop, token, lastId);
       if (!items.length) break;
 
       // Flatten variants
       const variants: ShopifyVariant[] = [];
       for (const p of items) {
-        if (!p.variants?.length) continue;
-        for (const v of p.variants) variants.push(v);
+        if (p.variants && p.variants.length) {
+          for (const v of p.variants) variants.push(v);
+        }
       }
 
-      if (!variants.length) continue;
-
-      if (!dry) {
+      if (variants.length && !dry) {
         // Upsert variants
-        // NOTE: numeric strings → DB numeric using CAST in SQL
         await sql/* sql */`
           INSERT INTO variants (
             shop_domain, product_id, variant_id, sku, title, price, compare_at_price,
@@ -127,7 +90,7 @@ export async function GET(req: NextRequest) {
           SELECT
             ${shop}::text                         AS shop_domain,
             x.product_id::bigint                  AS product_id,
-            x.variant_id::bigint                  AS variant_id,
+            x.id::bigint                          AS variant_id,
             x.sku::text                           AS sku,
             x.title::text                         AS title,
             NULLIF(x.price, '')::numeric(12,2)    AS price,
@@ -152,8 +115,7 @@ export async function GET(req: NextRequest) {
             taxable boolean,
             barcode text,
             created_at text,
-            updated_at text,
-            variant_id bigint
+            updated_at text
           )
           ON CONFLICT (shop_domain, variant_id)
           DO UPDATE SET
@@ -170,11 +132,16 @@ export async function GET(req: NextRequest) {
         `;
       }
 
-      totalInserted += variants.length;
-    } while (pageInfo);
+      totalUpserts += variants.length;
+      lastId = items[items.length - 1]?.id || lastId;
+      if (items.length < 250) break; // last page
+    }
 
-    return NextResponse.json({ ok: true, shop, inserted: totalInserted, dry });
+    return NextResponse.json({ ok: true, shop, upserts: totalUpserts, dry });
   } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message ?? "error" }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: err?.message ?? "error" },
+      { status: 500 }
+    );
   }
 }
