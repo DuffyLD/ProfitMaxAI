@@ -7,7 +7,7 @@ export const fetchCache = "force-no-store";
 import { NextRequest, NextResponse } from "next/server";
 import { getSql } from "../../../../lib/db";
 import {
-  getShopAndTokenWithFallback,
+  getShopAndTokenFromCookies,
   shopifyAdminGET,
 } from "../../../../lib/shopify";
 
@@ -37,7 +37,6 @@ type ShopifyProduct = {
 
 type ProductsResp = { products: ShopifyProduct[] };
 
-// Use since_id pagination via the same helper (consistent auth headers)
 async function fetchProductsBatch(
   shop: string,
   token: string,
@@ -55,32 +54,27 @@ async function fetchProductsBatch(
 
 export async function GET(req: NextRequest) {
   try {
+    // *** Use cookies only — matches your working routes ***
+    const cookie = req.headers.get("cookie") || "";
+    const { shop, token } = getShopAndTokenFromCookies(cookie);
+
     const sql = getSql();
-    const { shop, token } = await getShopAndTokenWithFallback(
-      req.headers.get("cookie") || undefined
-    );
-
     const dry = (new URL(req.url).searchParams.get("dry") || "true").toLowerCase() !== "false";
-    let totalUpserts = 0;
 
+    let totalUpserts = 0;
     let lastId = 0;
-    let page = 0;
 
     while (true) {
-      page++;
       const items = await fetchProductsBatch(shop, token, lastId);
       if (!items.length) break;
 
       // Flatten variants
       const variants: ShopifyVariant[] = [];
       for (const p of items) {
-        if (p.variants && p.variants.length) {
-          for (const v of p.variants) variants.push(v);
-        }
+        if (p.variants?.length) variants.push(...p.variants);
       }
 
       if (variants.length && !dry) {
-        // Upsert variants
         await sql/* sql */`
           INSERT INTO variants (
             shop_domain, product_id, variant_id, sku, title, price, compare_at_price,
