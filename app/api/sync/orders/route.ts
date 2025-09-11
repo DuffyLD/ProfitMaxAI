@@ -1,121 +1,130 @@
 // app/api/sync/orders/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { getSql } from "../../../../lib/db";
-import { getShopAndTokenWithFallback, shopifyAdminGET } from "../../../../lib/shopify";
+import { NextResponse } from "next/server";
+import { getCurrentShopAndToken, SHOPIFY_API_VERSION } from "@/lib/shopify";
+import { getSql } from "@/lib/db";
+
+type OrdersResp = {
+  orders: Array<any>;
+};
+
+function buildOrdersUrl(shop: string, params: Record<string, string>) {
+  const url = new URL(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/orders.json`);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  return url.toString();
+}
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-export async function GET(req: NextRequest) {
-  const sql = getSql();
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const dry = searchParams.get("dry") === "true";
+
   try {
-    const cookieHeader = req.headers.get("cookie") || undefined;
-    const { shop, token } = await getShopAndTokenWithFallback(cookieHeader);
+    const { shop, token } = await getCurrentShopAndToken();
+    const sql = getSql();
 
-    const url = new URL(req.url);
-    const dry = url.searchParams.get("dry") === "1";
-
-    // read last orders cursor
-    const [st] = await sql/* sql */`
+    // --- 1) Read last cursor (if any) from sync_state
+    const rows: any[] = await sql/* sql */`
       SELECT orders_cursor FROM sync_state WHERE shop_domain = ${shop}
     `;
-    const updated_at_min: string | undefined = st?.orders_cursor
-      ? new Date(st.orders_cursor).toISOString()
-      : undefined;
+    const updated_at_min: string | undefined = rows[0]?.orders_cursor;
 
-    const limit = 250;
-    let page = 1;
-    let insertedOrders = 0;
-    let insertedItems = 0;
-    let maxUpdated: Date | undefined;
+    // --- 2) Build Shopify request (created_at_min is fine for first pass)
+    const query: Record<string, string> = {
+      status: "any",
+      limit: "50", // safe page size
+      order: "updated_at asc", // so the cursor pattern is monotonic
+      fields: "id,name,created_at,updated_at,financial_status,fulfillment_status,total_price,currency,customer,id", // slim fields
+    };
+    if (updated_at_min) query["updated_at_min"] = updated_at_min;
 
-    while (true) {
-      const q: Record<string, string> = {
-        limit: String(limit),
-        page: String(page),
-        status: "any",
-      };
-      if (updated_at_min) q.updated_at_min = updated_at_min;
+    const firstUrl = buildOrdersUrl(shop, query);
 
-      const data = await shopifyAdminGET<{ orders: any[] }>(
-        shop,
-        token,
-        "orders.json",
-        q
-      );
+    // --- 3) Page loop (we’ll do one page for now, then you can refresh again)
+    const inserted = { orders: 0 };
+    let url = firstUrl;
 
-      const orders = data.orders || [];
-      if (orders.length === 0) break;
+    for (let page = 0; page < 10 && url; page++) {
+      const res = await fetch(url, {
+        headers: {
+          "X-Shopify-Access-Token": token,
+          "Accept": "application/json",
+        },
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`Shopify GET orders.json failed: ${res.status} ${text}`);
+      }
+      const data = (await res.json()) as OrdersResp;
+      const orders = data.orders ?? [];
 
-      for (const o of orders) {
-        const upd = o.updated_at ? new Date(o.updated_at) : undefined;
-        if (upd && (!maxUpdated || upd > maxUpdated)) maxUpdated = upd;
-
-        if (!dry) {
-          await sql/* sql */`
-            INSERT INTO orders (shop_domain, order_id, name, email, total_price, currency,
-                                created_at_shop, updated_at_shop, financial_status, fulfillment_status)
-            VALUES (
-              ${shop}, ${o.id}, ${o.name}, ${o.email}, ${o.total_price}::numeric, ${o.currency},
-              ${o.created_at ? new Date(o.created_at) : null},
-              ${o.updated_at ? new Date(o.updated_at) : null},
-              ${o.financial_status}, ${o.fulfillment_status}
-            )
-            ON CONFLICT (shop_domain, order_id) DO UPDATE
-            SET name = EXCLUDED.name,
-                email = EXCLUDED.email,
-                total_price = EXCLUDED.total_price,
-                currency = EXCLUDED.currency,
+      if (!dry && orders.length) {
+        await sql.begin(async (tx) => {
+          for (const o of orders) {
+            // upsert minimal order record
+            await tx/* sql */`
+              INSERT INTO orders (
+                shop_domain, order_id, name,
+                created_at_shop, updated_at_shop,
+                financial_status, fulfillment_status, currency,
+                total_price, customer_id, raw_json, updated_at
+              )
+              VALUES (
+                ${shop}, ${o.id}, ${o.name ?? null},
+                ${o.created_at ? new Date(o.created_at) : null},
+                ${o.updated_at ? new Date(o.updated_at) : null},
+                ${o.financial_status ?? null},
+                ${o.fulfillment_status ?? null},
+                ${o.currency ?? null},
+                ${o.total_price ?? null},
+                ${o.customer?.id ?? null},
+                ${JSON.stringify(o)}, now()
+              )
+              ON CONFLICT (shop_domain, order_id) DO UPDATE SET
+                name = EXCLUDED.name,
                 created_at_shop = EXCLUDED.created_at_shop,
                 updated_at_shop = EXCLUDED.updated_at_shop,
                 financial_status = EXCLUDED.financial_status,
-                fulfillment_status = EXCLUDED.fulfillment_status
-          `;
-        }
-        insertedOrders++;
-
-        for (const li of o.line_items || []) {
-          if (!dry) {
-            await sql/* sql */`
-              INSERT INTO order_items (shop_domain, order_id, line_id, product_id, variant_id,
-                                       title, quantity, price)
-              VALUES (
-                ${shop}, ${o.id}, ${li.id}, ${li.product_id}, ${li.variant_id},
-                ${li.title}, ${li.quantity}, ${li.price}::numeric
-              )
-              ON CONFLICT (shop_domain, order_id, line_id) DO UPDATE
-              SET product_id = EXCLUDED.product_id,
-                  variant_id = EXCLUDED.variant_id,
-                  title = EXCLUDED.title,
-                  quantity = EXCLUDED.quantity,
-                  price = EXCLUDED.price
+                fulfillment_status = EXCLUDED.fulfillment_status,
+                currency = EXCLUDED.currency,
+                total_price = EXCLUDED.total_price,
+                customer_id = EXCLUDED.customer_id,
+                raw_json = EXCLUDED.raw_json,
+                updated_at = now()
             `;
           }
-          insertedItems++;
-        }
+
+          // advance cursor to the last order.updated_at we just processed
+          const lastUpdated = orders[orders.length - 1]?.updated_at;
+          if (lastUpdated) {
+            await tx/* sql */`
+              INSERT INTO sync_state (shop_domain, orders_cursor, updated_at)
+              VALUES (${shop}, ${lastUpdated}, now())
+              ON CONFLICT (shop_domain) DO UPDATE SET
+                orders_cursor = EXCLUDED.orders_cursor,
+                updated_at    = now()
+            `;
+          }
+        });
       }
 
-      if (orders.length < limit) break;
-      page++;
-    }
+      inserted.orders += orders.length;
 
-    if (!dry && maxUpdated) {
-      await sql/* sql */`
-        INSERT INTO sync_state (shop_domain, orders_cursor)
-        VALUES (${shop}, ${maxUpdated})
-        ON CONFLICT (shop_domain) DO UPDATE
-        SET orders_cursor = GREATEST(sync_state.orders_cursor, EXCLUDED.orders_cursor),
-            updated_at = now()
-      `;
+      // pagination: Shopify uses Link headers; we’ll do a simple one-page for now
+      // (We can add proper Link parsing next.)
+      break;
     }
 
     return NextResponse.json({
       ok: true,
       shop,
-      inserted_orders: insertedOrders,
-      inserted_items: insertedItems,
+      inserted: inserted.orders,
       dry,
+      cursor_after: updated_at_min ?? null,
     });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: String(e.message || e) }, { status: 500 });
   }
 }
