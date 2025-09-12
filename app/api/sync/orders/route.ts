@@ -1,12 +1,12 @@
-// app/api/sync/variants/route.ts
+// app/api/sync/orders/route.ts
 import { NextResponse } from "next/server";
 import { getCurrentShopAndToken, SHOPIFY_API_VERSION } from "@/lib/shopify";
 import { getSql } from "@/lib/db";
 
-type VariantsResp = { variants: Array<any> };
+type OrdersResp = { orders: Array<any> };
 
-function buildVariantsUrl(shop: string, params: Record<string, string>) {
-  const url = new URL(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/variants.json`);
+function buildOrdersUrl(shop: string, params: Record<string, string>) {
+  const url = new URL(`https://${shop}/admin/api/${SHOPIFY_API_VERSION}/orders.json`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   return url.toString();
 }
@@ -22,25 +22,26 @@ export async function GET(req: Request) {
     const { shop, token } = await getCurrentShopAndToken();
     const sql = getSql();
 
-    // 1) Read last cursor from sync_state
+    // 1) Read last cursor (if any) from sync_state
     const res = await sql/* sql */`
-      SELECT variants_cursor FROM sync_state WHERE shop_domain = ${shop}
+      SELECT orders_cursor FROM sync_state WHERE shop_domain = ${shop}
     `;
     const rows: any[] = (res as any)?.rows ?? (Array.isArray(res) ? (res as any[]) : []);
-    const updated_at_min: string | undefined = rows[0]?.variants_cursor;
+    const updated_at_min: string | undefined = rows[0]?.orders_cursor;
 
     // 2) Build Shopify request
     const query: Record<string, string> = {
+      status: "any",
       limit: "50",
       order: "updated_at asc",
       fields:
-        "id,product_id,title,price,sku,position,created_at,updated_at,inventory_quantity,option1,option2,option3",
+        "id,name,created_at,updated_at,financial_status,fulfillment_status,total_price,currency,customer",
     };
     if (updated_at_min) query.updated_at_min = updated_at_min;
-    const firstUrl = buildVariantsUrl(shop, query);
+    const firstUrl = buildOrdersUrl(shop, query);
 
-    // 3) Page loop (one page MVP)
-    const inserted = { variants: 0 };
+    // 3) Page loop (single page MVP)
+    const inserted = { orders: 0 };
     let url: string | null = firstUrl;
 
     for (let page = 0; page < 1 && url; page++) {
@@ -53,67 +54,67 @@ export async function GET(req: Request) {
       });
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
-        throw new Error(`Shopify GET variants.json failed: ${resp.status} ${text}`);
+        throw new Error(`Shopify GET orders.json failed: ${resp.status} ${text}`);
       }
 
-      const data = (await resp.json()) as VariantsResp;
-      const variants = data.variants ?? [];
+      const data = (await resp.json()) as OrdersResp;
+      const orders = data.orders ?? [];
 
-      if (!dry && variants.length) {
-        for (const v of variants) {
+      if (!dry && orders.length) {
+        for (const o of orders) {
           await sql/* sql */`
-            INSERT INTO variants (
-              shop_domain, variant_id, product_id, title,
-              price, sku, position, created_at_shop, updated_at_shop,
-              inventory_quantity, option1, option2, option3, raw_json, updated_at
+            INSERT INTO orders (
+              shop_domain, order_id, name,
+              created_at_shop, updated_at_shop,
+              financial_status, fulfillment_status, currency,
+              total_price, customer_id, raw_json, updated_at
             )
             VALUES (
-              ${shop}, ${v.id}, ${v.product_id}, ${v.title ?? null},
-              ${v.price ?? null}, ${v.sku ?? null}, ${v.position ?? null},
-              ${v.created_at ? new Date(v.created_at) : null},
-              ${v.updated_at ? new Date(v.updated_at) : null},
-              ${v.inventory_quantity ?? null},
-              ${v.option1 ?? null}, ${v.option2 ?? null}, ${v.option3 ?? null},
-              ${JSON.stringify(v)}, now()
+              ${shop}, ${o.id}, ${o.name ?? null},
+              ${o.created_at ? new Date(o.created_at) : null},
+              ${o.updated_at ? new Date(o.updated_at) : null},
+              ${o.financial_status ?? null},
+              ${o.fulfillment_status ?? null},
+              ${o.currency ?? null},
+              ${o.total_price ?? null},
+              ${o.customer?.id ?? null},
+              ${JSON.stringify(o)}, now()
             )
-            ON CONFLICT (shop_domain, variant_id) DO UPDATE SET
-              product_id         = EXCLUDED.product_id,
-              title              = EXCLUDED.title,
-              price              = EXCLUDED.price,
-              sku                = EXCLUDED.sku,
-              position           = EXCLUDED.position,
+            ON CONFLICT (shop_domain, order_id) DO UPDATE SET
+              name               = EXCLUDED.name,
               created_at_shop    = EXCLUDED.created_at_shop,
               updated_at_shop    = EXCLUDED.updated_at_shop,
-              inventory_quantity = EXCLUDED.inventory_quantity,
-              option1            = EXCLUDED.option1,
-              option2            = EXCLUDED.option2,
-              option3            = EXCLUDED.option3,
+              financial_status   = EXCLUDED.financial_status,
+              fulfillment_status = EXCLUDED.fulfillment_status,
+              currency           = EXCLUDED.currency,
+              total_price        = EXCLUDED.total_price,
+              customer_id        = EXCLUDED.customer_id,
               raw_json           = EXCLUDED.raw_json,
               updated_at         = now()
           `;
         }
 
         // update cursor
-        const lastUpdated = variants[variants.length - 1]?.updated_at;
+        const lastUpdated = orders[orders.length - 1]?.updated_at;
         if (lastUpdated) {
           await sql/* sql */`
-            INSERT INTO sync_state (shop_domain, variants_cursor, updated_at)
+            INSERT INTO sync_state (shop_domain, orders_cursor, updated_at)
             VALUES (${shop}, ${lastUpdated}, now())
             ON CONFLICT (shop_domain) DO UPDATE SET
-              variants_cursor = EXCLUDED.variants_cursor,
-              updated_at      = now()
+              orders_cursor = EXCLUDED.orders_cursor,
+              updated_at    = now()
           `;
         }
       }
 
-      inserted.variants += variants.length;
+      inserted.orders += orders.length;
       url = null;
     }
 
     return NextResponse.json({
       ok: true,
       shop,
-      inserted: inserted.variants,
+      inserted: inserted.orders,
       dry,
       cursor_after: updated_at_min ?? null,
     });
