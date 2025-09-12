@@ -26,7 +26,6 @@ export async function GET(req: Request) {
     const res = await sql/* sql */`
       SELECT orders_cursor FROM sync_state WHERE shop_domain = ${shop}
     `;
-    // Some drivers return { rows: [...] }, others return [...]. Normalize to array:
     const rows: any[] = (res as any)?.rows ?? (Array.isArray(res) ? (res as any[]) : []);
     const updated_at_min: string | undefined = rows[0]?.orders_cursor;
 
@@ -41,7 +40,7 @@ export async function GET(req: Request) {
     if (updated_at_min) query.updated_at_min = updated_at_min;
     const firstUrl = buildOrdersUrl(shop, query);
 
-    // 3) Page loop (single page for MVP; refresh to continue)
+    // 3) Page loop (single page MVP)
     const inserted = { orders: 0 };
     let url: string | null = firstUrl;
 
@@ -62,55 +61,54 @@ export async function GET(req: Request) {
       const orders = data.orders ?? [];
 
       if (!dry && orders.length) {
-        await sql.begin(async (tx: any) => {
-          for (const o of orders) {
-            await tx/* sql */`
-              INSERT INTO orders (
-                shop_domain, order_id, name,
-                created_at_shop, updated_at_shop,
-                financial_status, fulfillment_status, currency,
-                total_price, customer_id, raw_json, updated_at
-              )
-              VALUES (
-                ${shop}, ${o.id}, ${o.name ?? null},
-                ${o.created_at ? new Date(o.created_at) : null},
-                ${o.updated_at ? new Date(o.updated_at) : null},
-                ${o.financial_status ?? null},
-                ${o.fulfillment_status ?? null},
-                ${o.currency ?? null},
-                ${o.total_price ?? null},
-                ${o.customer?.id ?? null},
-                ${JSON.stringify(o)}, now()
-              )
-              ON CONFLICT (shop_domain, order_id) DO UPDATE SET
-                name               = EXCLUDED.name,
-                created_at_shop    = EXCLUDED.created_at_shop,
-                updated_at_shop    = EXCLUDED.updated_at_shop,
-                financial_status   = EXCLUDED.financial_status,
-                fulfillment_status = EXCLUDED.fulfillment_status,
-                currency           = EXCLUDED.currency,
-                total_price        = EXCLUDED.total_price,
-                customer_id        = EXCLUDED.customer_id,
-                raw_json           = EXCLUDED.raw_json,
-                updated_at         = now()
-            `;
-          }
+        for (const o of orders) {
+          await sql/* sql */`
+            INSERT INTO orders (
+              shop_domain, order_id, name,
+              created_at_shop, updated_at_shop,
+              financial_status, fulfillment_status, currency,
+              total_price, customer_id, raw_json, updated_at
+            )
+            VALUES (
+              ${shop}, ${o.id}, ${o.name ?? null},
+              ${o.created_at ? new Date(o.created_at) : null},
+              ${o.updated_at ? new Date(o.updated_at) : null},
+              ${o.financial_status ?? null},
+              ${o.fulfillment_status ?? null},
+              ${o.currency ?? null},
+              ${o.total_price ?? null},
+              ${o.customer?.id ?? null},
+              ${JSON.stringify(o)}, now()
+            )
+            ON CONFLICT (shop_domain, order_id) DO UPDATE SET
+              name               = EXCLUDED.name,
+              created_at_shop    = EXCLUDED.created_at_shop,
+              updated_at_shop    = EXCLUDED.updated_at_shop,
+              financial_status   = EXCLUDED.financial_status,
+              fulfillment_status = EXCLUDED.fulfillment_status,
+              currency           = EXCLUDED.currency,
+              total_price        = EXCLUDED.total_price,
+              customer_id        = EXCLUDED.customer_id,
+              raw_json           = EXCLUDED.raw_json,
+              updated_at         = now()
+          `;
+        }
 
-          const lastUpdated = orders[orders.length - 1]?.updated_at;
-          if (lastUpdated) {
-            await tx/* sql */`
-              INSERT INTO sync_state (shop_domain, orders_cursor, updated_at)
-              VALUES (${shop}, ${lastUpdated}, now())
-              ON CONFLICT (shop_domain) DO UPDATE SET
-                orders_cursor = EXCLUDED.orders_cursor,
-                updated_at    = now()
-            `;
-          }
-        });
+        // update cursor
+        const lastUpdated = orders[orders.length - 1]?.updated_at;
+        if (lastUpdated) {
+          await sql/* sql */`
+            INSERT INTO sync_state (shop_domain, orders_cursor, updated_at)
+            VALUES (${shop}, ${lastUpdated}, now())
+            ON CONFLICT (shop_domain) DO UPDATE SET
+              orders_cursor = EXCLUDED.orders_cursor,
+              updated_at    = now()
+          `;
+        }
       }
 
       inserted.orders += orders.length;
-      url = null; // real pagination via Link header can be added later
+      url = null;
     }
 
     return NextResponse.json({
