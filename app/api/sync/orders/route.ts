@@ -23,12 +23,14 @@ export async function GET(req: Request) {
     const sql = getSql();
 
     // 1) Read last cursor (if any) from sync_state
-    const rows: any[] = await sql/* sql */`
+    const res = await sql/* sql */`
       SELECT orders_cursor FROM sync_state WHERE shop_domain = ${shop}
     `;
+    // Some drivers return { rows: [...] }, others return [...]. Normalize to array:
+    const rows: any[] = (res as any)?.rows ?? (Array.isArray(res) ? (res as any[]) : []);
     const updated_at_min: string | undefined = rows[0]?.orders_cursor;
 
-    // 2) Build Shopify request (minimal fields; order by updated_at asc for monotonic cursor)
+    // 2) Build Shopify request
     const query: Record<string, string> = {
       status: "any",
       limit: "50",
@@ -37,31 +39,30 @@ export async function GET(req: Request) {
         "id,name,created_at,updated_at,financial_status,fulfillment_status,total_price,currency,customer",
     };
     if (updated_at_min) query.updated_at_min = updated_at_min;
-
     const firstUrl = buildOrdersUrl(shop, query);
 
-    // 3) Page loop (single page for now; refresh again to continue)
+    // 3) Page loop (single page for MVP; refresh to continue)
     const inserted = { orders: 0 };
     let url: string | null = firstUrl;
 
     for (let page = 0; page < 1 && url; page++) {
-      const res = await fetch(url, {
+      const resp = await fetch(url, {
         headers: {
           "X-Shopify-Access-Token": token,
           Accept: "application/json",
         },
         cache: "no-store",
       });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Shopify GET orders.json failed: ${res.status} ${text}`);
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`Shopify GET orders.json failed: ${resp.status} ${text}`);
       }
 
-      const data = (await res.json()) as OrdersResp;
+      const data = (await resp.json()) as OrdersResp;
       const orders = data.orders ?? [];
 
       if (!dry && orders.length) {
-        await sql.begin(async (tx) => {
+        await sql.begin(async (tx: any) => {
           for (const o of orders) {
             await tx/* sql */`
               INSERT INTO orders (
@@ -82,16 +83,16 @@ export async function GET(req: Request) {
                 ${JSON.stringify(o)}, now()
               )
               ON CONFLICT (shop_domain, order_id) DO UPDATE SET
-                name              = EXCLUDED.name,
-                created_at_shop   = EXCLUDED.created_at_shop,
-                updated_at_shop   = EXCLUDED.updated_at_shop,
-                financial_status  = EXCLUDED.financial_status,
-                fulfillment_status= EXCLUDED.fulfillment_status,
-                currency          = EXCLUDED.currency,
-                total_price       = EXCLUDED.total_price,
-                customer_id       = EXCLUDED.customer_id,
-                raw_json          = EXCLUDED.raw_json,
-                updated_at        = now()
+                name               = EXCLUDED.name,
+                created_at_shop    = EXCLUDED.created_at_shop,
+                updated_at_shop    = EXCLUDED.updated_at_shop,
+                financial_status   = EXCLUDED.financial_status,
+                fulfillment_status = EXCLUDED.fulfillment_status,
+                currency           = EXCLUDED.currency,
+                total_price        = EXCLUDED.total_price,
+                customer_id        = EXCLUDED.customer_id,
+                raw_json           = EXCLUDED.raw_json,
+                updated_at         = now()
             `;
           }
 
@@ -109,8 +110,7 @@ export async function GET(req: Request) {
       }
 
       inserted.orders += orders.length;
-      // TODO: parse Link header for real pagination; single page for MVP.
-      url = null;
+      url = null; // real pagination via Link header can be added later
     }
 
     return NextResponse.json({
