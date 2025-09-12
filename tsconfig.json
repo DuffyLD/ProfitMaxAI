@@ -1,8 +1,8 @@
 {
   "compilerOptions": {
-    "target": "es2020",
-    "lib": ["dom", "dom.iterable", "es2020"],
-    "allowJs": false,
+    "target": "es2022",
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
@@ -15,7 +15,10 @@
     "incremental": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./*"]
+      "@/app/*": ["app/*"],
+      "@/lib/*": ["lib/*"]
     }
-  }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
 }
