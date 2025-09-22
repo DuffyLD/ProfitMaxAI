@@ -72,9 +72,7 @@ export default function Home({
         if (mounted) setLoading(false);
       }
     })();
-    return () => {
-      mounted = false;
-    };
+    return () => { mounted = false; };
   }, []);
 
   return (
@@ -93,26 +91,11 @@ export default function Home({
         <section style={{ marginBottom: 24 }}>
           <h2 style={h2}>Store: {stats.shop_name || stats.shop}</h2>
           <div style={grid2}>
-            <div style={card}>
-              <b>Products</b>
-              <div>{stats.counts?.products ?? 0}</div>
-            </div>
-            <div style={card}>
-              <b>Orders (30d)</b>
-              <div>{stats.counts?.orders_last_30d ?? 0}</div>
-            </div>
-            <div style={card}>
-              <b>Customers</b>
-              <div>{stats.counts?.customers ?? 0}</div>
-            </div>
-            <div style={card}>
-              <b>Variants (page)</b>
-              <div>{stats.counts?.variants_first_page ?? 0}</div>
-            </div>
-            <div style={card}>
-              <b>Inventory units (page)</b>
-              <div>{stats.counts?.inventory_units_first_page ?? 0}</div>
-            </div>
+            <div style={card}><b>Products</b><div>{stats.counts?.products ?? 0}</div></div>
+            <div style={card}><b>Orders (30d)</b><div>{stats.counts?.orders_last_30d ?? 0}</div></div>
+            <div style={card}><b>Customers</b><div>{stats.counts?.customers ?? 0}</div></div>
+            <div style={card}><b>Variants (page)</b><div>{stats.counts?.variants_first_page ?? 0}</div></div>
+            <div style={card}><b>Inventory units (page)</b><div>{stats.counts?.inventory_units_first_page ?? 0}</div></div>
           </div>
         </section>
       )}
@@ -132,26 +115,19 @@ export default function Home({
               <li key={r.variant_id} style={card}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
                   <div>
-                    <div>
-                      <b>{r.type.replace("_", " ")}</b> — {r.title}{" "}
-                      {r.sku ? `(${r.sku})` : ""}
-                    </div>
+                    <div><b>{r.type.replace("_", " ")}</b> — {r.title} {r.sku ? `(${r.sku})` : ""}</div>
                     <div style={meta}>
-                      price: ${r.current_price.toFixed(2)} • stock: {r.inventory_quantity} •
-                      sales({r.sales_window_days}d): {r.sales_in_window}
+                      price: ${r.current_price.toFixed(2)} • stock: {r.inventory_quantity} • sales({r.sales_window_days}d): {r.sales_in_window}
                     </div>
                     <div style={{ marginTop: 6 }}>{r.rationale}</div>
                   </div>
                   {typeof r.suggested_price === "number" && (
                     <div style={{ textAlign: "right" }}>
                       <div style={meta}>suggested</div>
-                      <div>
-                        <b>${r.suggested_price.toFixed(2)}</b>
-                      </div>
+                      <div><b>${r.suggested_price.toFixed(2)}</b></div>
                       {typeof r.suggested_change_pct === "number" && (
                         <div style={meta}>
-                          {r.suggested_change_pct > 0 ? "+" : ""}
-                          {r.suggested_change_pct}%
+                          {r.suggested_change_pct > 0 ? "+" : ""}{r.suggested_change_pct}%
                         </div>
                       )}
                     </div>
@@ -170,8 +146,7 @@ const container: React.CSSProperties = {
   maxWidth: 960,
   margin: "24px auto",
   padding: "0 16px",
-  fontFamily:
-    "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial",
+  fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial",
 };
 
 const h1: React.CSSProperties = { fontSize: 24, marginBottom: 12 };
