@@ -28,15 +28,20 @@ export async function GET() {
 
     const createdMin = iso30DaysAgo();
 
-    const [shopInfo, prodCount, ordersCount, custCount, variantsPage, invItemsPage] = await Promise.all([
+    // We fetch variants and use their inventory fields for an inventory snapshot.
+    const [shopInfo, prodCount, ordersCount, custCount, variantsPage] = await Promise.all([
       fetchShopifyJson(shop, token, `/shop.json`),
       fetchShopifyJson(shop, token, `/products/count.json`),
       fetchShopifyJson(shop, token, `/orders/count.json?status=any&created_at_min=${encodeURIComponent(createdMin)}`),
       fetchShopifyJson(shop, token, `/customers/count.json`),
-      fetchShopifyJson(shop, token, `/variants.json?limit=50&fields=id`),
-      // inventory_levels requires filters; for MVP use inventory_items
-      fetchShopifyJson(shop, token, `/inventory_items.json?limit=50`),
+      fetchShopifyJson(shop, token, `/variants.json?limit=50&fields=id,inventory_quantity,inventory_item_id,product_id,sku,updated_at`),
     ]);
+
+    const variantsArr = Array.isArray(variantsPage?.variants) ? variantsPage.variants : [];
+    const inventory_units_first_page = variantsArr.reduce(
+      (sum: number, v: any) => sum + (Number(v?.inventory_quantity) || 0),
+      0
+    );
 
     return NextResponse.json({
       ok: true,
@@ -46,8 +51,8 @@ export async function GET() {
         products: Number(prodCount?.count ?? 0),
         orders_last_30d: Number(ordersCount?.count ?? 0),
         customers: Number(custCount?.count ?? 0),
-        variants_first_page: Array.isArray(variantsPage?.variants) ? variantsPage.variants.length : 0,
-        inventory_items_first_page: Array.isArray(invItemsPage?.inventory_items) ? invItemsPage.inventory_items.length : 0,
+        variants_first_page: variantsArr.length,
+        inventory_units_first_page, // sum of inventory_quantity across first page of variants
       },
     });
   } catch (e: any) {
