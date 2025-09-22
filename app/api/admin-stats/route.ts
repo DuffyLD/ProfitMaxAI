@@ -28,13 +28,14 @@ export async function GET() {
 
     const createdMin = iso30DaysAgo();
 
-    const [shopInfo, prodCount, ordersCount, custCount, variantsPage, invPage] = await Promise.all([
+    const [shopInfo, prodCount, ordersCount, custCount, variantsPage, invItemsPage] = await Promise.all([
       fetchShopifyJson(shop, token, `/shop.json`),
       fetchShopifyJson(shop, token, `/products/count.json`),
       fetchShopifyJson(shop, token, `/orders/count.json?status=any&created_at_min=${encodeURIComponent(createdMin)}`),
       fetchShopifyJson(shop, token, `/customers/count.json`),
       fetchShopifyJson(shop, token, `/variants.json?limit=50&fields=id`),
-      fetchShopifyJson(shop, token, `/inventory_levels.json?limit=50`),
+      // inventory_levels requires filters; for MVP use inventory_items
+      fetchShopifyJson(shop, token, `/inventory_items.json?limit=50`),
     ]);
 
     return NextResponse.json({
@@ -46,7 +47,7 @@ export async function GET() {
         orders_last_30d: Number(ordersCount?.count ?? 0),
         customers: Number(custCount?.count ?? 0),
         variants_first_page: Array.isArray(variantsPage?.variants) ? variantsPage.variants.length : 0,
-        inventory_levels_first_page: Array.isArray(invPage?.inventory_levels) ? invPage.inventory_levels.length : 0,
+        inventory_items_first_page: Array.isArray(invItemsPage?.inventory_items) ? invItemsPage.inventory_items.length : 0,
       },
     });
   } catch (e: any) {
