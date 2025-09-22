@@ -1,6 +1,37 @@
 // app/page.tsx
+"use client";
+
 import { redirect } from "next/navigation";
-import Link from "next/link";
+import { useEffect, useState } from "react";
+
+type Stats = {
+  ok: boolean;
+  shop: string;
+  shop_name?: string;
+  counts?: {
+    products: number;
+    orders_last_30d: number;
+    customers: number;
+    variants_first_page: number;
+    inventory_units_first_page: number;
+  };
+  error?: string;
+};
+
+type Rec = {
+  variant_id: number;
+  product_id: number;
+  sku: string | null;
+  title: string;
+  current_price: number;
+  inventory_quantity: number;
+  sales_window_days: number;
+  sales_in_window: number;
+  type: "price_increase" | "price_decrease" | "restock_alert";
+  suggested_price?: number;
+  suggested_change_pct?: number;
+  rationale: string;
+};
 
 export default function Home({
   searchParams,
@@ -15,52 +46,158 @@ export default function Home({
     redirect(`/api/shopify/auth?shop=${encodeURIComponent(shop)}`);
   }
 
-  // 🔽 Your existing UI stays exactly the same
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [recs, setRecs] = useState<Rec[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const [sRes, rRes] = await Promise.all([
+          fetch("/api/admin-stats"),
+          fetch("/api/recommendations"),
+        ]);
+        const sJson = await sRes.json();
+        const rJson = await rRes.json();
+        if (!mounted) return;
+        setStats(sJson);
+        setRecs(Array.isArray(rJson?.recommendations) ? rJson.recommendations : []);
+        setErr(null);
+      } catch (e: any) {
+        if (!mounted) return;
+        setErr(String(e?.message || e));
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
-    <main className="space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-semibold">ProfitMaxAI</h1>
-        <p className="text-sm/6 opacity-80">
-          AI-native pricing, inventory, and abandoned cart recovery for Shopify.
-        </p>
-      </header>
+    <main style={container}>
+      <h1 style={h1}>ProfitMaxAI — Profit Intelligence</h1>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-lg bg-[var(--card)] p-4">
-          <h2 className="font-medium">Step 1: Connect Shopify</h2>
-          <p className="text-sm opacity-80">Secure OAuth — no passwords.</p>
-          <Link
-            href="/connect"
-            className="inline-block mt-3 rounded-md bg-white/10 px-3 py-2"
-          >
-            Connect store
-          </Link>
+      {loading && <p>Loading…</p>}
+
+      {!loading && err && (
+        <div style={errorBox}>
+          <b>Load error:</b> {err}
         </div>
+      )}
 
-        <div className="rounded-lg bg-[var(--card)] p-4">
-          <h2 className="font-medium">Step 2: First Sync (60 days)</h2>
-          <p className="text-sm opacity-80">
-            Orders, products, and inventory with batching.
-          </p>
-        </div>
+      {!loading && stats?.ok && (
+        <section style={{ marginBottom: 24 }}>
+          <h2 style={h2}>Store: {stats.shop_name || stats.shop}</h2>
+          <div style={grid2}>
+            <div style={card}>
+              <b>Products</b>
+              <div>{stats.counts?.products ?? 0}</div>
+            </div>
+            <div style={card}>
+              <b>Orders (30d)</b>
+              <div>{stats.counts?.orders_last_30d ?? 0}</div>
+            </div>
+            <div style={card}>
+              <b>Customers</b>
+              <div>{stats.counts?.customers ?? 0}</div>
+            </div>
+            <div style={card}>
+              <b>Variants (page)</b>
+              <div>{stats.counts?.variants_first_page ?? 0}</div>
+            </div>
+            <div style={card}>
+              <b>Inventory units (page)</b>
+              <div>{stats.counts?.inventory_units_first_page ?? 0}</div>
+            </div>
+          </div>
+        </section>
+      )}
 
-        <div className="rounded-lg bg-[var(--card)] p-4">
-          <h2 className="font-medium">Step 3: See 3 Actions</h2>
-          <p className="text-sm opacity-80">
-            Pricing recs, inventory alerts, and abandoned checkout insights.
-          </p>
-        </div>
-      </div>
+      {!loading && !stats?.ok && (
+        <section style={{ marginBottom: 24, color: "crimson" }}>
+          <b>Stats error:</b> {stats?.error || "Unknown"}
+        </section>
+      )}
 
-      <div className="rounded-lg bg-[var(--card)] p-4">
-        <h2 className="font-medium">System health</h2>
-        <p className="text-sm opacity-80">
-          API reachable?{" "}
-          <a className="underline" href="/api/health" target="_blank">
-            Check status
-          </a>
-        </p>
-      </div>
+      {!loading && (
+        <section>
+          <h2 style={h2}>AI Recommendations</h2>
+          {recs.length === 0 && <p>No recommendations yet for the current window.</p>}
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {recs.map((r) => (
+              <li key={r.variant_id} style={card}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                  <div>
+                    <div>
+                      <b>{r.type.replace("_", " ")}</b> — {r.title}{" "}
+                      {r.sku ? `(${r.sku})` : ""}
+                    </div>
+                    <div style={meta}>
+                      price: ${r.current_price.toFixed(2)} • stock: {r.inventory_quantity} •
+                      sales({r.sales_window_days}d): {r.sales_in_window}
+                    </div>
+                    <div style={{ marginTop: 6 }}>{r.rationale}</div>
+                  </div>
+                  {typeof r.suggested_price === "number" && (
+                    <div style={{ textAlign: "right" }}>
+                      <div style={meta}>suggested</div>
+                      <div>
+                        <b>${r.suggested_price.toFixed(2)}</b>
+                      </div>
+                      {typeof r.suggested_change_pct === "number" && (
+                        <div style={meta}>
+                          {r.suggested_change_pct > 0 ? "+" : ""}
+                          {r.suggested_change_pct}%
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </main>
   );
 }
+
+const container: React.CSSProperties = {
+  maxWidth: 960,
+  margin: "24px auto",
+  padding: "0 16px",
+  fontFamily:
+    "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial",
+};
+
+const h1: React.CSSProperties = { fontSize: 24, marginBottom: 12 };
+const h2: React.CSSProperties = { fontSize: 18, marginBottom: 8 };
+const meta: React.CSSProperties = { fontSize: 12, opacity: 0.8 };
+
+const grid2: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0,1fr))",
+  gap: 12,
+};
+
+const card: React.CSSProperties = {
+  padding: 12,
+  borderRadius: 12,
+  border: "1px solid #eee",
+  boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+  background: "white",
+  marginBottom: 12,
+};
+
+const errorBox: React.CSSProperties = {
+  padding: 12,
+  borderRadius: 8,
+  border: "1px solid #ffb3b3",
+  background: "#fff5f5",
+  color: "#a40000",
+  marginBottom: 16,
+};
