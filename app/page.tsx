@@ -38,11 +38,12 @@ export default function Home({
 }: {
   searchParams?: { [key: string]: string | string[] | undefined };
 }) {
-  const shop = typeof searchParams?.shop === "string" ? searchParams.shop : undefined;
-  const hmac = typeof searchParams?.hmac === "string" ? searchParams.hmac : undefined;
+  const shop   = typeof searchParams?.shop === "string" ? searchParams.shop : undefined;
+  const hmac   = typeof searchParams?.hmac === "string" ? searchParams.hmac : undefined;
+  const embedded = searchParams?.embedded === "1" || searchParams?.embedded === "true";
 
-  // 🚀 Auto-redirect to OAuth when Shopify loads the app with shop+hmac
-  if (shop && hmac) {
+  // 🚀 Redirect to OAuth only when NOT embedded (prevents blank iframe in Admin)
+  if (!embedded && shop && hmac) {
     redirect(`/api/shopify/auth?shop=${encodeURIComponent(shop)}`);
   }
 
