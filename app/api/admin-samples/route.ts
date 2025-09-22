@@ -18,11 +18,12 @@ export async function GET() {
       return NextResponse.json({ ok:false, error:"Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" }, { status: 500 });
     }
 
-    const [products, variants, orders, invLevels, customers] = await Promise.all([
+    const [products, variants, orders, invItems, customers] = await Promise.all([
       fetchShopifyJson(shop, token, `/products.json?limit=5&fields=id,title,product_type,status,created_at`),
       fetchShopifyJson(shop, token, `/variants.json?limit=5`),
       fetchShopifyJson(shop, token, `/orders.json?status=any&limit=5&fields=id,name,created_at,financial_status,fulfillment_status,total_price`),
-      fetchShopifyJson(shop, token, `/inventory_levels.json?limit=5`),
+      // inventory_levels requires filters; use inventory_items for MVP
+      fetchShopifyJson(shop, token, `/inventory_items.json?limit=5`),
       fetchShopifyJson(shop, token, `/customers.json?limit=5&fields=id,created_at,orders_count,total_spent`),
     ]);
 
@@ -39,8 +40,8 @@ export async function GET() {
         orders: (orders?.orders || []).map((o: any) => ({
           id: o.id, name: o.name, created_at: o.created_at, financial_status: o.financial_status, fulfillment_status: o.fulfillment_status, total_price: o.total_price
         })),
-        inventory_levels: (invLevels?.inventory_levels || []).map((l: any) => ({
-          inventory_item_id: l.inventory_item_id, available: l.available, location_id: l.location_id, updated_at: l.updated_at
+        inventory_items: (invItems?.inventory_items || []).map((i: any) => ({
+          id: i.id, sku: i.sku, tracked: i.tracked, created_at: i.created_at, updated_at: i.updated_at
         })),
         customers: (customers?.customers || []).map((c: any) => ({
           id: c.id, created_at: c.created_at, orders_count: c.orders_count, total_spent: c.total_spent
