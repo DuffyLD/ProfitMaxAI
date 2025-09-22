@@ -18,12 +18,11 @@ export async function GET() {
       return NextResponse.json({ ok:false, error:"Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" }, { status: 500 });
     }
 
-    const [products, variants, orders, invItems, customers] = await Promise.all([
+    // Use variants for inventory snapshot (they include inventory_quantity, inventory_item_id, sku)
+    const [products, variants, orders, customers] = await Promise.all([
       fetchShopifyJson(shop, token, `/products.json?limit=5&fields=id,title,product_type,status,created_at`),
-      fetchShopifyJson(shop, token, `/variants.json?limit=5`),
+      fetchShopifyJson(shop, token, `/variants.json?limit=5&fields=id,product_id,title,price,inventory_quantity,inventory_item_id,sku,updated_at`),
       fetchShopifyJson(shop, token, `/orders.json?status=any&limit=5&fields=id,name,created_at,financial_status,fulfillment_status,total_price`),
-      // inventory_levels requires filters; use inventory_items for MVP
-      fetchShopifyJson(shop, token, `/inventory_items.json?limit=5`),
       fetchShopifyJson(shop, token, `/customers.json?limit=5&fields=id,created_at,orders_count,total_spent`),
     ]);
 
@@ -35,13 +34,17 @@ export async function GET() {
           id: p.id, title: p.title, product_type: p.product_type, status: p.status, created_at: p.created_at
         })),
         variants: (variants?.variants || []).map((v: any) => ({
-          id: v.id, product_id: v.product_id, title: v.title, price: v.price, inventory_quantity: v.inventory_quantity
+          id: v.id,
+          product_id: v.product_id,
+          title: v.title,
+          price: v.price,
+          sku: v.sku,
+          inventory_item_id: v.inventory_item_id,
+          inventory_quantity: v.inventory_quantity,
+          updated_at: v.updated_at,
         })),
         orders: (orders?.orders || []).map((o: any) => ({
           id: o.id, name: o.name, created_at: o.created_at, financial_status: o.financial_status, fulfillment_status: o.fulfillment_status, total_price: o.total_price
-        })),
-        inventory_items: (invItems?.inventory_items || []).map((i: any) => ({
-          id: i.id, sku: i.sku, tracked: i.tracked, created_at: i.created_at, updated_at: i.updated_at
         })),
         customers: (customers?.customers || []).map((c: any) => ({
           id: c.id, created_at: c.created_at, orders_count: c.orders_count, total_spent: c.total_spent
