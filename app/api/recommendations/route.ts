@@ -32,11 +32,9 @@ type VariantRow = {
 type LineItem = {
   variant_id: number | null;
   quantity: number;
-  title?: string;
-  sku?: string | null;
 };
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const shop = process.env.SHOPIFY_TEST_SHOP!;
     const token = process.env.SHOPIFY_TEST_TOKEN!;
@@ -44,19 +42,32 @@ export async function GET() {
       return NextResponse.json({ ok:false, error:"Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" }, { status: 500 });
     }
 
-    // 1) Fetch variants (first page is enough for MVP rules)
+    // Read query param windowDays (default 30)
+    const { searchParams } = new URL(req.url);
+    const windowDays = Math.max(1, Math.min(90, Number(searchParams.get("windowDays") || 30)));
+    const createdMin = isoDaysAgo(windowDays);
+
+    // 1) Fetch variants (first page ok for MVP)
     const variantsResp = await fetchShopifyJson(
-      shop,
-      token,
+      shop, token,
       `/variants.json?limit=50&fields=id,product_id,title,price,inventory_quantity,inventory_item_id,sku,updated_at`
     );
     const variants: VariantRow[] = Array.isArray(variantsResp?.variants) ? variantsResp.variants : [];
 
-    // 2) Fetch last 30d orders with line_items to compute per-variant sales
-    const createdMin = isoDaysAgo(30);
+    // 2) Fetch products (map product_id -> product_type to skip gift cards cleanly)
+    const productsResp = await fetchShopifyJson(
+      shop, token,
+      `/products.json?limit=250&fields=id,product_type,title`
+    );
+    const prodArr: any[] = Array.isArray(productsResp?.products) ? productsResp.products : [];
+    const productTypeById = new Map<number, string>();
+    for (const p of prodArr) {
+      if (p?.id != null) productTypeById.set(Number(p.id), String(p.product_type || ""));
+    }
+
+    // 3) Fetch last windowDays orders including line_items for per-variant sales
     const ordersResp = await fetchShopifyJson(
-      shop,
-      token,
+      shop, token,
       `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,line_items,total_price`
     );
     const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
@@ -74,7 +85,7 @@ export async function GET() {
       }
     }
 
-    // 3) Simple rules to create recommendations
+    // 4) Rules
     type Rec = {
       variant_id: number;
       product_id: number;
@@ -82,27 +93,29 @@ export async function GET() {
       title: string;
       current_price: number;
       inventory_quantity: number;
-      sales_30d: number;
+      sales_window_days: number;
+      sales_in_window: number;
       type: "price_increase" | "price_decrease" | "restock_alert";
       suggested_price?: number;
-      suggested_change_pct?: number; // e.g., +5 or -5
+      suggested_change_pct?: number;
       rationale: string;
-      audit: any; // raw fields for transparency
+      audit: any;
     };
 
     const recs: Rec[] = [];
     for (const v of variants) {
-      const sales30 = Number(salesByVariant[String(v.id)] || 0);
+      const productType = productTypeById.get(Number(v.product_id)) || "";
+      if (productType.toLowerCase() === "giftcard" || productType.toLowerCase() === "gift card") {
+        continue; // skip gift cards
+      }
+
+      const salesWindow = Number(salesByVariant[String(v.id)] || 0);
       const inv = Number(v.inventory_quantity || 0);
       const priceNum = Number(v.price || 0);
+      if (!isFinite(priceNum) || priceNum <= 0) continue; // safety
 
-      // Skip gift cards (Shopify treats them differently)
-      // Heuristic: gift cards usually have product_type "giftcard" and $10/25/50 variants,
-      // but since we don't have product_type here, skip if price is 0 or null.
-      if (!isFinite(priceNum) || priceNum <= 0) continue;
-
-      // Rule A: Popular + healthy stock → suggest +5%
-      if (sales30 >= 3 && inv > 10) {
+      // A) Popular + healthy stock → suggest +5%
+      if (salesWindow >= 3 && inv > 10) {
         const pct = 5;
         const newPrice = Number((priceNum * (1 + pct / 100)).toFixed(2));
         recs.push({
@@ -112,18 +125,19 @@ export async function GET() {
           title: v.title,
           current_price: priceNum,
           inventory_quantity: inv,
-          sales_30d: sales30,
+          sales_window_days: windowDays,
+          sales_in_window: salesWindow,
           type: "price_increase",
           suggested_price: newPrice,
           suggested_change_pct: pct,
-          rationale: `Sold ${sales30} in the last 30 days with ${inv} units in stock. A modest +${pct}% increase should preserve conversion while improving margin.`,
-          audit: { variant: v, salesByVariant: sales30 }
+          rationale: `Sold ${salesWindow} in the last ${windowDays} days with ${inv} in stock. A modest +${pct}% increase should lift margin without killing conversion.`,
+          audit: { variant: v, product_type: productType, sales: salesWindow }
         });
         continue;
       }
 
-      // Rule B: No sales + high stock → suggest -5% (or promo)
-      if (sales30 === 0 && inv >= 20) {
+      // B) No sales + high stock → suggest -5%
+      if (salesWindow === 0 && inv >= 20) {
         const pct = -5;
         const newPrice = Number((priceNum * (1 + pct / 100)).toFixed(2));
         recs.push({
@@ -133,18 +147,19 @@ export async function GET() {
           title: v.title,
           current_price: priceNum,
           inventory_quantity: inv,
-          sales_30d: sales30,
+          sales_window_days: windowDays,
+          sales_in_window: salesWindow,
           type: "price_decrease",
           suggested_price: newPrice,
           suggested_change_pct: pct,
-          rationale: `No sales in 30 days with ${inv} units on hand suggests price sensitivity or poor demand. Consider a temporary -5% to stimulate sell-through.`,
-          audit: { variant: v, salesByVariant: sales30 }
+          rationale: `No sales in ${windowDays} days with ${inv} units on hand suggests price sensitivity or poor demand. Consider a temporary -5% to stimulate sell-through.`,
+          audit: { variant: v, product_type: productType, sales: salesWindow }
         });
         continue;
       }
 
-      // Rule C: Low stock + some sales → restock alert
-      if (inv < 3 && sales30 > 0) {
+      // C) Low stock + some sales → restock alert
+      if (inv < 3 && salesWindow > 0) {
         recs.push({
           variant_id: v.id,
           product_id: v.product_id,
@@ -152,17 +167,17 @@ export async function GET() {
           title: v.title,
           current_price: priceNum,
           inventory_quantity: inv,
-          sales_30d: sales30,
+          sales_window_days: windowDays,
+          sales_in_window: salesWindow,
           type: "restock_alert",
-          rationale: `Only ${inv} units left and ${sales30} sold in 30 days — risk of stockout.`,
-          audit: { variant: v, salesByVariant: sales30 }
+          rationale: `Only ${inv} units left and ${salesWindow} sold in ${windowDays} days — risk of stockout.`,
+          audit: { variant: v, product_type: productType, sales: salesWindow }
         });
         continue;
       }
     }
 
-    // Sort by biggest potential impact (roughly: sales_30d desc, then inventory desc)
-    recs.sort((a, b) => (b.sales_30d - a.sales_30d) || (b.inventory_quantity - a.inventory_quantity));
+    recs.sort((a, b) => (b.sales_in_window - a.sales_in_window) || (b.inventory_quantity - a.inventory_quantity));
 
     return NextResponse.json({
       ok: true,
@@ -173,11 +188,11 @@ export async function GET() {
         orders_considered: orders.length,
         generated: recs.length,
         rules: [
-          "If sales_30d >= 3 and inventory > 10 -> price_increase +5%",
-          "If sales_30d == 0 and inventory >= 20 -> price_decrease -5%",
-          "If inventory < 3 and sales_30d > 0 -> restock_alert"
+          "If sales >= 3 and inventory > 10 -> price_increase +5%",
+          "If sales == 0 and inventory >= 20 -> price_decrease -5%",
+          "If inventory < 3 and sales > 0 -> restock_alert"
         ],
-        window_days: 30
+        window_days: windowDays
       }
     });
   } catch (e: any) {
