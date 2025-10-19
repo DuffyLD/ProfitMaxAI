@@ -31,17 +31,19 @@ export async function GET(req: Request) {
     const days = Math.max(1, Math.min(90, Number(searchParams.get("days") || 60)));
     const createdMin = isoDaysAgo(days);
 
+    // Make sure shop row exists (token intentionally not stored)
+    await sql/*sql*/`
+      insert into shops (shop_domain, access_token)
+      values (${shop}, null)
+      on conflict (shop_domain) do nothing;
+    `;
+
     // 1) Orders (one page for MVP)
     const ordersResp = await fetchShopifyJson(
       shop, token,
       `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,total_price,line_items`
     );
     const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
-
-    await sql/*sql*/`
-      insert into shops (shop_domain) values (${shop})
-      on conflict (shop_domain) do nothing;
-    `;
 
     for (const o of orders) {
       await sql/*sql*/`
