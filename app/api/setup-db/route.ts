@@ -1,3 +1,4 @@
+// app/api/setup-db/route.ts
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 
@@ -5,7 +6,7 @@ export async function GET() {
   try {
     const sql = getSql();
 
-    // Create tables one statement at a time (Neon requirement)
+    // shops
     await sql/*sql*/`
       create table if not exists shops (
         id              serial primary key,
@@ -14,10 +15,10 @@ export async function GET() {
         created_at      timestamptz default now()
       );
     `;
-
-    // If a prior schema made access_token NOT NULL, relax it.
+    // relax in case an old schema made it NOT NULL
     await sql/*sql*/`alter table shops alter column access_token drop not null;`;
 
+    // orders (base create)
     await sql/*sql*/`
       create table if not exists orders (
         id              bigint primary key,
@@ -26,7 +27,11 @@ export async function GET() {
         total_price     numeric
       );
     `;
+    // ✅ heal older tables that might be missing columns
+    await sql/*sql*/`alter table orders add column if not exists created_at timestamptz;`;
+    await sql/*sql*/`alter table orders add column if not exists total_price numeric;`;
 
+    // order_items
     await sql/*sql*/`
       create table if not exists order_items (
         order_id        bigint references orders(id) on delete cascade,
@@ -36,6 +41,7 @@ export async function GET() {
       );
     `;
 
+    // variant_snapshots
     await sql/*sql*/`
       create table if not exists variant_snapshots (
         id                  bigserial primary key,
@@ -48,6 +54,7 @@ export async function GET() {
       );
     `;
 
+    // rec_logs
     await sql/*sql*/`
       create table if not exists rec_logs (
         id              bigserial primary key,
@@ -63,14 +70,14 @@ export async function GET() {
       );
     `;
 
-    // Ensure your shop row exists (access_token left null on purpose)
+    // Ensure your shop row exists (token intentionally null)
     await sql/*sql*/`
       insert into shops (shop_domain, access_token)
       values (${process.env.SHOPIFY_TEST_SHOP!}, null)
       on conflict (shop_domain) do nothing;
     `;
 
-    return NextResponse.json({ ok: true, message: "Schema ensured." });
+    return NextResponse.json({ ok: true, message: "Schema ensured (orders columns healed)." });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
