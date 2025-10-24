@@ -1,3 +1,4 @@
+// app/api/ingest/daily/route.ts
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 
@@ -12,8 +13,14 @@ async function fetchShopifyJson(shop: string, token: string, path: string) {
   const url = `https://${shop}/admin/api/${API_VERSION}${path}`;
   const res = await fetch(url, { headers: { "X-Shopify-Access-Token": token } });
   let body: any = null;
-  try { body = await res.json(); } catch {}
-  if (!res.ok) throw new Error(`HTTP ${res.status} @ ${path} :: ${JSON.stringify(body)?.slice(0,200)}`);
+  try {
+    body = await res.json();
+  } catch {}
+  if (!res.ok) {
+    throw new Error(
+      `HTTP ${res.status} @ ${path} :: ${JSON.stringify(body)?.slice(0, 200)}`
+    );
+  }
   return body;
 }
 
@@ -22,69 +29,101 @@ export async function GET(req: Request) {
     const shop = process.env.SHOPIFY_TEST_SHOP!;
     const token = process.env.SHOPIFY_TEST_TOKEN!;
     if (!shop || !token) {
-      return NextResponse.json({ ok:false, error:"Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" }, { status: 500 });
+      return NextResponse.json(
+        { ok: false, error: "Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" },
+        { status: 500 }
+      );
     }
 
     const sql = getSql();
-
     const { searchParams } = new URL(req.url);
-    const days = Math.max(1, Math.min(90, Number(searchParams.get("days") || 60)));
+    // allow up to 120 days per our discussion
+    const days = Math.max(1, Math.min(120, Number(searchParams.get("days") || 60)));
     const createdMin = isoDaysAgo(days);
 
-    // Make sure shop row exists (token intentionally not stored)
+    // Ensure shop row exists (we're not storing tokens here)
     await sql/*sql*/`
       insert into shops (shop_domain, access_token)
       values (${shop}, null)
       on conflict (shop_domain) do nothing;
     `;
 
-    // 1) Orders (one page for MVP)
+    // ---- 1) Ingest orders (single page, 250 max; good enough for MVP) ----
     const ordersResp = await fetchShopifyJson(
-      shop, token,
-      `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,total_price,line_items`
+      shop,
+      token,
+      `/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(
+        createdMin
+      )}&fields=id,created_at,total_price,line_items`
     );
     const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
 
+    let insertedOrders = 0;
+    let upsertedItems = 0;
+
     for (const o of orders) {
+      // Defensive: skip if no id or no created_at
+      const orderId = o?.id;
+      const createdAt = o?.created_at;
+      if (!orderId || !createdAt) continue;
+
+      // Insert order row
       await sql/*sql*/`
         insert into orders (id, shop_domain, created_at, total_price)
-        values (${o.id}, ${shop}, ${o.created_at}, ${o.total_price || null})
+        values (${orderId}, ${shop}, ${createdAt}, ${o?.total_price ?? null})
         on conflict (id) do nothing;
       `;
+      insertedOrders++;
 
+      // Insert line items
       const items: any[] = Array.isArray(o?.line_items) ? o.line_items : [];
       for (const li of items) {
         const vid = li?.variant_id;
         const qty = Number(li?.quantity || 0);
-        if (!vid || qty <= 0) continue;
+        // Defensive: skip if missing IDs or non-positive qty
+        if (!orderId || !vid || qty <= 0) continue;
 
         await sql/*sql*/`
           insert into order_items (order_id, variant_id, quantity)
-          values (${o.id}, ${vid}, ${qty})
-          on conflict (order_id, variant_id) do update set quantity = excluded.quantity;
+          values (${orderId}, ${vid}, ${qty})
+          on conflict (order_id, variant_id)
+          do update set quantity = excluded.quantity; -- keep idempotent/simple
         `;
+        upsertedItems++;
       }
     }
 
-    // 2) Variant snapshot (first page)
+    // ---- 2) Variant snapshot (first page only for MVP) ----
     const variantsResp = await fetchShopifyJson(
-      shop, token,
-      `/variants.json?limit=50&fields=id,product_id,price,inventory_quantity`
+      shop,
+      token,
+      `/variants.json?limit=250&fields=id,product_id,price,inventory_quantity`
     );
     const variants: any[] = Array.isArray(variantsResp?.variants) ? variantsResp.variants : [];
 
+    let insertedSnapshots = 0;
     for (const v of variants) {
+      const variantId = v?.id;
+      const productId = v?.product_id;
+      if (!variantId || !productId) continue;
+
       await sql/*sql*/`
         insert into variant_snapshots (shop_domain, variant_id, product_id, price, inventory_quantity)
-        values (${shop}, ${v.id}, ${v.product_id}, ${v.price || null}, ${v.inventory_quantity || 0});
+        values (${shop}, ${variantId}, ${productId}, ${v?.price ?? null}, ${v?.inventory_quantity ?? 0});
       `;
+      insertedSnapshots++;
     }
 
     return NextResponse.json({
       ok: true,
-      ingested: { orders: orders.length, variant_snapshots: variants.length, window_days: days }
+      ingested: {
+        orders: insertedOrders,
+        order_items: upsertedItems,
+        variant_snapshots: insertedSnapshots,
+        window_days: days,
+      },
     });
   } catch (e: any) {
-    return NextResponse.json({ ok:false, error: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
