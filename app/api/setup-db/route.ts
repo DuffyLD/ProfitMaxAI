@@ -17,11 +17,10 @@ export async function GET() {
         created_at      timestamptz default now()
       );
     `;
-    // relax in case an old schema made it NOT NULL
     await sql/*sql*/`alter table shops alter column access_token drop not null;`;
 
     // ---------------------------
-    // orders (base create)
+    // orders (create-if-missing)
     // ---------------------------
     await sql/*sql*/`
       create table if not exists orders (
@@ -31,31 +30,12 @@ export async function GET() {
         total_price     numeric
       );
     `;
-
-    // ✅ heal/ensure expected columns exist (idempotent)
+    // Ensure expected columns exist (no-ops if already there)
     await sql/*sql*/`alter table orders add column if not exists created_at timestamptz;`;
     await sql/*sql*/`alter table orders add column if not exists total_price numeric;`;
     await sql/*sql*/`alter table orders add column if not exists shop_domain text;`;
-    // make sure FK is in place (if shop_domain existed without FK)
-    await sql/*sql*/`
-      do $$
-      begin
-        if not exists (
-          select 1
-          from information_schema.table_constraints tc
-          where tc.table_name = 'orders' and tc.constraint_type = 'FOREIGN KEY'
-        ) then
-          alter table orders
-            drop constraint if exists orders_shop_domain_fkey,
-            add constraint orders_shop_domain_fkey
-              foreign key (shop_domain) references shops(shop_domain) on delete cascade;
-        end if;
-      end$$;
-    `;
 
-    // ---------------------------
-    // 🔧 LEGACY HEAL: handle old "order_id" column
-    // ---------------------------
+    // 🔧 Legacy heal: if a stale "order_id" column ever existed, migrate & drop it
     const legacy = await sql/*sql*/`
       select
         exists(
@@ -67,18 +47,18 @@ export async function GET() {
           where table_schema='public' and table_name='orders' and column_name='id'
         ) as has_id;
     ` as any;
-
     const hasOrderId = !!legacy?.[0]?.has_order_id;
     const hasId      = !!legacy?.[0]?.has_id;
 
     if (hasOrderId && !hasId) {
-      // If legacy column exists and "id" doesn't, rename it to "id"
       await sql/*sql*/`alter table orders rename column order_id to id;`;
     } else if (hasOrderId && hasId) {
-      // If both exist, backfill id where null, then drop the legacy column
       await sql/*sql*/`update orders set id = order_id where id is null;`;
       await sql/*sql*/`alter table orders drop column if exists order_id;`;
     }
+
+    // ✅ Ensure a UNIQUE index on orders(id) for ON CONFLICT to work even if PK was missing historically
+    await sql/*sql*/`create unique index if not exists idx_orders_id_unique on orders(id);`;
 
     // ---------------------------
     // order_items
@@ -90,6 +70,10 @@ export async function GET() {
         quantity        integer not null,
         primary key (order_id, variant_id)
       );
+    `;
+    // ✅ Ensure a UNIQUE index backing ON CONFLICT (order_id, variant_id)
+    await sql/*sql*/`
+      create unique index if not exists idx_order_items_unique on order_items(order_id, variant_id);
     `;
 
     // ---------------------------
@@ -134,7 +118,7 @@ export async function GET() {
       on conflict (shop_domain) do nothing;
     `;
 
-    return NextResponse.json({ ok: true, message: "Schema ensured + legacy healed." });
+    return NextResponse.json({ ok: true, message: "Schema ensured + indexes in place." });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
