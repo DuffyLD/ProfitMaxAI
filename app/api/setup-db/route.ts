@@ -36,7 +36,7 @@ export async function GET() {
     await sql/*sql*/`alter table orders add column if not exists shop_domain text;`;
 
     // 🔧 Legacy heal: if a stale "order_id" column ever existed, migrate & drop it
-    const legacy = await sql/*sql*/`
+    const legacyOrders = await sql/*sql*/`
       select
         exists(
           select 1 from information_schema.columns
@@ -47,8 +47,8 @@ export async function GET() {
           where table_schema='public' and table_name='orders' and column_name='id'
         ) as has_id;
     ` as any;
-    const hasOrderId = !!legacy?.[0]?.has_order_id;
-    const hasId      = !!legacy?.[0]?.has_id;
+    const hasOrderId = !!legacyOrders?.[0]?.has_order_id;
+    const hasId      = !!legacyOrders?.[0]?.has_id;
 
     if (hasOrderId && !hasId) {
       await sql/*sql*/`alter table orders rename column order_id to id;`;
@@ -57,7 +57,7 @@ export async function GET() {
       await sql/*sql*/`alter table orders drop column if exists order_id;`;
     }
 
-    // ✅ Ensure a UNIQUE index on orders(id) for ON CONFLICT to work even if PK was missing historically
+    // Ensure a UNIQUE index on orders(id) for ON CONFLICT to work even if PK was missing historically
     await sql/*sql*/`create unique index if not exists idx_orders_id_unique on orders(id);`;
 
     // ---------------------------
@@ -71,10 +71,42 @@ export async function GET() {
         primary key (order_id, variant_id)
       );
     `;
-    // ✅ Ensure a UNIQUE index backing ON CONFLICT (order_id, variant_id)
+
+    // ✅ Ensure backing unique index (idempotent)
     await sql/*sql*/`
       create unique index if not exists idx_order_items_unique on order_items(order_id, variant_id);
     `;
+
+    // 🔧 Legacy heal: some older schemas added shop_domain NOT NULL to order_items.
+    // Make it nullable and backfill from orders when possible.
+    const legacyItems = await sql/*sql*/`
+      select
+        exists(
+          select 1 from information_schema.columns
+          where table_schema='public' and table_name='order_items' and column_name='shop_domain'
+        ) as has_shop_domain;
+    ` as any;
+    const hasShopDomainInItems = !!legacyItems?.[0]?.has_shop_domain;
+
+    if (hasShopDomainInItems) {
+      // Drop NOT NULL if present
+      await sql/*sql*/`alter table order_items alter column shop_domain drop not null;`;
+
+      // Optional: best-effort backfill from orders where null
+      await sql/*sql*/`
+        update order_items oi
+        set shop_domain = o.shop_domain
+        from orders o
+        where oi.order_id = o.id
+          and (oi.shop_domain is null or oi.shop_domain = '');
+      `;
+      // Optionally ensure a FK if you want (not required for MVP):
+      // await sql/*sql*/`
+      //   alter table order_items
+      //   add constraint if not exists order_items_shop_domain_fkey
+      //   foreign key (shop_domain) references shops(shop_domain) on delete cascade;
+      // `;
+    }
 
     // ---------------------------
     // variant_snapshots
@@ -118,7 +150,7 @@ export async function GET() {
       on conflict (shop_domain) do nothing;
     `;
 
-    return NextResponse.json({ ok: true, message: "Schema ensured + indexes in place." });
+    return NextResponse.json({ ok: true, message: "Schema ensured + legacy healed (orders & order_items)." });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
