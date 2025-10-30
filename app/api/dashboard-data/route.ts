@@ -1,21 +1,22 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 
-const WINDOW_DAYS = 60;
+const DEFAULT_WINDOW_DAYS = 60;
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const shop = process.env.SHOPIFY_TEST_SHOP || null;
     if (!shop) {
-      return NextResponse.json(
-        { ok: false, error: "SHOPIFY_TEST_SHOP not set" },
-        { status: 500 }
-      );
+      return NextResponse.json({ ok: false, error: "SHOPIFY_TEST_SHOP not set" }, { status: 500 });
     }
+
+    // Allow override via ?windowDays= (bounds 7..180)
+    const { searchParams } = new URL(req.url);
+    const raw = Number(searchParams.get("windowDays"));
+    const windowDays = Number.isFinite(raw) ? Math.max(7, Math.min(180, raw)) : DEFAULT_WINDOW_DAYS;
 
     const sql = getSql();
 
-    // 1) Basic metrics
     const [{ c: ordersCount }] = await sql/*sql*/`
       select count(*)::int as c
       from orders
@@ -27,7 +28,7 @@ export async function GET() {
       from order_items oi
       join orders o on o.id = oi.order_id
       where o.shop_domain = ${shop}
-        and o.created_at >= now() - make_interval(days => ${WINDOW_DAYS});
+        and o.created_at >= now() - make_interval(days => ${windowDays});
     ` as any;
 
     const [{ c: totalSnapshots }] = await sql/*sql*/`
@@ -36,7 +37,6 @@ export async function GET() {
       where shop_domain = ${shop};
     ` as any;
 
-    // 2) Top sellers (last WINDOW_DAYS)
     const topSellers = await sql/*sql*/`
       select
         oi.variant_id,
@@ -44,7 +44,7 @@ export async function GET() {
       from order_items oi
       join orders o on o.id = oi.order_id
       where o.shop_domain = ${shop}
-        and o.created_at >= now() - make_interval(days => ${WINDOW_DAYS})
+        and o.created_at >= now() - make_interval(days => ${windowDays})
       group by oi.variant_id
       order by qty_sold desc, oi.variant_id asc
       limit 10;
@@ -55,16 +55,13 @@ export async function GET() {
       shop,
       metrics: {
         orders_in_db: ordersCount || 0,
-        unique_variants_sold_60d: uniqueVariantsSold || 0,
+        unique_variants_sold_window: uniqueVariantsSold || 0,
         variant_snapshots_total: totalSnapshots || 0,
       },
       top_sellers: topSellers,
-      meta: { filtered_by_60d: true, window_days: WINDOW_DAYS },
+      meta: { filtered_by_window: true, window_days: windowDays },
     });
   } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, error: String(e?.message || e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
