@@ -17,10 +17,11 @@ export async function GET() {
         created_at      timestamptz default now()
       );
     `;
+    // ensure nullable (we don't store it in tests)
     await sql/*sql*/`alter table shops alter column access_token drop not null;`;
 
     // ---------------------------
-    // orders (create-if-missing)
+    // orders
     // ---------------------------
     await sql/*sql*/`
       create table if not exists orders (
@@ -30,12 +31,12 @@ export async function GET() {
         total_price     numeric
       );
     `;
-    // Ensure expected columns exist (no-ops if already there)
+    // ensure columns (idempotent)
     await sql/*sql*/`alter table orders add column if not exists created_at timestamptz;`;
     await sql/*sql*/`alter table orders add column if not exists total_price numeric;`;
     await sql/*sql*/`alter table orders add column if not exists shop_domain text;`;
 
-    // 🔧 Legacy heal: if a stale "order_id" column ever existed, migrate & drop it
+    // legacy heal: orders.order_id -> orders.id
     const legacyOrders = await sql/*sql*/`
       select
         exists(
@@ -57,7 +58,7 @@ export async function GET() {
       await sql/*sql*/`alter table orders drop column if exists order_id;`;
     }
 
-    // Ensure a UNIQUE index on orders(id) for ON CONFLICT to work even if PK was missing historically
+    // ensure unique index for ON CONFLICT
     await sql/*sql*/`create unique index if not exists idx_orders_id_unique on orders(id);`;
 
     // ---------------------------
@@ -71,28 +72,35 @@ export async function GET() {
         primary key (order_id, variant_id)
       );
     `;
-
-    // ✅ Ensure backing unique index (idempotent)
+    // ensure backing unique index for ON CONFLICT
     await sql/*sql*/`
       create unique index if not exists idx_order_items_unique on order_items(order_id, variant_id);
     `;
 
-    // 🔧 Legacy heal: some older schemas added shop_domain NOT NULL to order_items.
-    // Make it nullable and backfill from orders when possible.
-    const legacyItems = await sql/*sql*/`
+    // LEGACY HEAL #1: drop unused line_id if it exists (often NOT NULL in old schemas)
+    const legacyItemsCols = await sql/*sql*/`
       select
         exists(
           select 1 from information_schema.columns
+          where table_schema='public' and table_name='order_items' and column_name='line_id'
+        ) as has_line_id,
+        exists(
+          select 1 from information_schema.columns
           where table_schema='public' and table_name='order_items' and column_name='shop_domain'
-        ) as has_shop_domain;
+        ) as has_shop_domain
     ` as any;
-    const hasShopDomainInItems = !!legacyItems?.[0]?.has_shop_domain;
 
+    const hasLineId = !!legacyItemsCols?.[0]?.has_line_id;
+    const hasShopDomainInItems = !!legacyItemsCols?.[0]?.has_shop_domain;
+
+    if (hasLineId) {
+      // Drop any legacy column we don't use
+      await sql/*sql*/`alter table order_items drop column if exists line_id;`;
+    }
+
+    // LEGACY HEAL #2: make order_items.shop_domain nullable and backfill from orders
     if (hasShopDomainInItems) {
-      // Drop NOT NULL if present
       await sql/*sql*/`alter table order_items alter column shop_domain drop not null;`;
-
-      // Optional: best-effort backfill from orders where null
       await sql/*sql*/`
         update order_items oi
         set shop_domain = o.shop_domain
@@ -100,10 +108,11 @@ export async function GET() {
         where oi.order_id = o.id
           and (oi.shop_domain is null or oi.shop_domain = '');
       `;
-      // Optionally ensure a FK if you want (not required for MVP):
+      // (Optional FK; not required for MVP)
       // await sql/*sql*/`
       //   alter table order_items
-      //   add constraint if not exists order_items_shop_domain_fkey
+      //   drop constraint if exists order_items_shop_domain_fkey,
+      //   add constraint order_items_shop_domain_fkey
       //   foreign key (shop_domain) references shops(shop_domain) on delete cascade;
       // `;
     }
@@ -141,16 +150,14 @@ export async function GET() {
       );
     `;
 
-    // ---------------------------
-    // Ensure your dev shop row exists (token intentionally null)
-    // ---------------------------
+    // seed dev shop row (token intentionally null)
     await sql/*sql*/`
       insert into shops (shop_domain, access_token)
       values (${process.env.SHOPIFY_TEST_SHOP!}, null)
       on conflict (shop_domain) do nothing;
     `;
 
-    return NextResponse.json({ ok: true, message: "Schema ensured + legacy healed (orders & order_items)." });
+    return NextResponse.json({ ok: true, message: "Schema ensured + legacy healed (orders, order_items)." });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
