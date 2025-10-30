@@ -15,7 +15,7 @@ export async function GET() {
 
     const sql = getSql();
 
-    // 1️⃣ Basic metrics
+    // 1) Basic metrics
     const [{ c: ordersCount }] = await sql/*sql*/`
       select count(*)::int as c
       from orders
@@ -27,7 +27,7 @@ export async function GET() {
       from order_items oi
       join orders o on o.id = oi.order_id
       where o.shop_domain = ${shop}
-        and o.created_at >= now() - interval '${WINDOW_DAYS} days';
+        and o.created_at >= now() - make_interval(days => ${WINDOW_DAYS});
     ` as any;
 
     const [{ c: totalSnapshots }] = await sql/*sql*/`
@@ -36,7 +36,7 @@ export async function GET() {
       where shop_domain = ${shop};
     ` as any;
 
-    // 2️⃣ Top sellers (last 60 days)
+    // 2) Top sellers (last WINDOW_DAYS)
     const topSellers = await sql/*sql*/`
       select
         oi.variant_id,
@@ -44,13 +44,12 @@ export async function GET() {
       from order_items oi
       join orders o on o.id = oi.order_id
       where o.shop_domain = ${shop}
-        and o.created_at >= now() - interval '${WINDOW_DAYS} days'
+        and o.created_at >= now() - make_interval(days => ${WINDOW_DAYS})
       group by oi.variant_id
-      order by qty_sold desc
+      order by qty_sold desc, oi.variant_id asc
       limit 10;
     ` as any[];
 
-    // 3️⃣ Respond with structured metrics
     return NextResponse.json({
       ok: true,
       shop,
