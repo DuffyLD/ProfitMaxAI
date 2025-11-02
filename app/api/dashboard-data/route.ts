@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 
-const DEFAULT_WINDOW_DAYS = 60;
+const DEFAULT_WINDOW_DAYS = 120;
+const MIN_DAYS = 30;
+const MAX_DAYS = 365;
 
 export async function GET(req: Request) {
   try {
@@ -10,19 +12,23 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: "SHOPIFY_TEST_SHOP not set" }, { status: 500 });
     }
 
-    // Allow override via ?windowDays= (bounds 7..180)
+    // Parse ?windowDays= with safe bounds (30..365), default 120
     const { searchParams } = new URL(req.url);
     const raw = Number(searchParams.get("windowDays"));
-    const windowDays = Number.isFinite(raw) ? Math.max(7, Math.min(180, raw)) : DEFAULT_WINDOW_DAYS;
+    const windowDays = Number.isFinite(raw)
+      ? Math.max(MIN_DAYS, Math.min(MAX_DAYS, raw))
+      : DEFAULT_WINDOW_DAYS;
 
     const sql = getSql();
 
+    // Orders count (all-time for shop)
     const [{ c: ordersCount }] = await sql/*sql*/`
       select count(*)::int as c
       from orders
       where shop_domain = ${shop};
     ` as any;
 
+    // Unique variants sold within window
     const [{ c: uniqueVariantsSold }] = await sql/*sql*/`
       select count(distinct oi.variant_id)::int as c
       from order_items oi
@@ -31,12 +37,14 @@ export async function GET(req: Request) {
         and o.created_at >= now() - make_interval(days => ${windowDays});
     ` as any;
 
+    // Total snapshots for shop
     const [{ c: totalSnapshots }] = await sql/*sql*/`
       select count(*)::int as c
       from variant_snapshots
       where shop_domain = ${shop};
     ` as any;
 
+    // Top sellers (within window)
     const topSellers = await sql/*sql*/`
       select
         oi.variant_id,
@@ -59,7 +67,7 @@ export async function GET(req: Request) {
         variant_snapshots_total: totalSnapshots || 0,
       },
       top_sellers: topSellers,
-      meta: { filtered_by_window: true, window_days: windowDays },
+      meta: { filtered_by_window: true, window_days: windowDays, bounds: { min: MIN_DAYS, max: MAX_DAYS } },
     });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
