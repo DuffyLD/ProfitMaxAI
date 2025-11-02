@@ -1,13 +1,21 @@
+// app/api/ingest/daily/route.ts
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 
 const API_VERSION = "2024-10";
+const DEFAULT_DAYS = 120;
+const MAX_DAYS = 365;
+
+function parseDays(url: string) {
+  const sp = new URL(url).searchParams;
+  const raw = Number(sp.get("days"));
+  const n = Number.isFinite(raw) ? raw : DEFAULT_DAYS;
+  return Math.max(1, Math.min(MAX_DAYS, n));
+}
 
 function isoDaysAgoSafe(days: number) {
-  const clamp = Math.max(1, Math.min(180, Number.isFinite(days) ? days : 60));
-  const t = Date.now() - clamp * 24 * 60 * 60 * 1000;
-  const d = new Date(t);
-  return d.toISOString();
+  const t = Date.now() - days * 24 * 60 * 60 * 1000;
+  return new Date(t).toISOString();
 }
 
 async function fetchShopifyJson(shop: string, token: string, path: string) {
@@ -28,21 +36,17 @@ export async function GET(req: Request) {
     }
 
     const sql = getSql();
-
-    // Parse ?days= safely (bounds 1..180)
-    const { searchParams } = new URL(req.url);
-    const raw = Number(searchParams.get("days"));
-    const days = Number.isFinite(raw) ? Math.max(1, Math.min(180, raw)) : 60;
+    const days = parseDays(req.url);
     const createdMin = isoDaysAgoSafe(days);
 
-    // Ensure shop row exists (token intentionally not stored)
+    // Ensure shop row exists (token intentionally null)
     await sql/*sql*/`
       insert into shops (shop_domain, access_token)
       values (${shop}, null)
       on conflict (shop_domain) do nothing;
     `;
 
-    // 1) Orders (one page MVP)
+    // ---- 1) Orders (one page is fine for MVP) ----
     const ordersResp = await fetchShopifyJson(
       shop, token,
       `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,total_price,line_items`
@@ -73,10 +77,10 @@ export async function GET(req: Request) {
       }
     }
 
-    // 2) Variant snapshot (first page)
+    // ---- 2) Variant snapshots (first page; 250 max) ----
     const variantsResp = await fetchShopifyJson(
       shop, token,
-      `/variants.json?limit=50&fields=id,product_id,price,inventory_quantity`
+      `/variants.json?limit=250&fields=id,product_id,price,inventory_quantity`
     );
     const variants: any[] = Array.isArray(variantsResp?.variants) ? variantsResp.variants : [];
 
@@ -89,7 +93,12 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      ingested: { orders: orders.length, order_items: itemsInserted, variant_snapshots: variants.length, window_days: days }
+      ingested: {
+        orders: orders.length,
+        order_items: itemsInserted,
+        variant_snapshots: variants.length,
+        window_days: days
+      }
     });
   } catch (e: any) {
     return NextResponse.json({ ok:false, error: String(e?.message || e) }, { status: 500 });
