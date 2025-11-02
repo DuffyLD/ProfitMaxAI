@@ -8,8 +8,12 @@ const MAX_DAYS = 365;
 
 function parseDays(url: string) {
   const sp = new URL(url).searchParams;
-  const raw = Number(sp.get("days"));
-  const n = Number.isFinite(raw) ? raw : DEFAULT_DAYS;
+  const v = sp.get("days");
+  let n = DEFAULT_DAYS;
+  if (v !== null) {
+    const maybe = Number(v);
+    if (Number.isFinite(maybe) && !Number.isNaN(maybe)) n = maybe;
+  }
   return Math.max(1, Math.min(MAX_DAYS, n));
 }
 
@@ -46,7 +50,7 @@ export async function GET(req: Request) {
       on conflict (shop_domain) do nothing;
     `;
 
-    // ---- 1) Orders (one page is fine for MVP) ----
+    // 1) Orders (one page for MVP)
     const ordersResp = await fetchShopifyJson(
       shop, token,
       `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,total_price,line_items`
@@ -77,7 +81,7 @@ export async function GET(req: Request) {
       }
     }
 
-    // ---- 2) Variant snapshots (first page; 250 max) ----
+    // 2) Variant snapshots (first page; up to 250)
     const variantsResp = await fetchShopifyJson(
       shop, token,
       `/variants.json?limit=250&fields=id,product_id,price,inventory_quantity`
@@ -93,12 +97,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      ingested: {
-        orders: orders.length,
-        order_items: itemsInserted,
-        variant_snapshots: variants.length,
-        window_days: days
-      }
+      ingested: { orders: orders.length, order_items: itemsInserted, variant_snapshots: variants.length, window_days: days }
     });
   } catch (e: any) {
     return NextResponse.json({ ok:false, error: String(e?.message || e) }, { status: 500 });
