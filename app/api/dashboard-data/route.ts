@@ -2,13 +2,35 @@
 import { NextResponse } from "next/server";
 import { getSql } from "@/lib/db";
 
-// ✅ Force dynamic execution (no ISR) and disable caching
+// 🔒 Make this endpoint always dynamic and uncached everywhere
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
+export const fetchCache = "force-no-store";
+// (optional) export const runtime = "edge";
 
-const DEFAULT_WINDOW_DAYS = 120;
+const DEFAULT_WINDOW_DAYS = 120;   // <— our true default
 const MIN_DAYS = 30;
 const MAX_DAYS = 365;
+
+function parseWindowDays(url: string) {
+  const sp = new URL(url).searchParams;
+  const raw = sp.get("windowDays");
+  if (raw === null) return DEFAULT_WINDOW_DAYS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_WINDOW_DAYS;
+  return Math.max(MIN_DAYS, Math.min(MAX_DAYS, n));
+}
+
+function noCacheHeaders() {
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    // Vercel/Edge CDN hints
+    "CDN-Cache-Control": "no-store",
+    "Vercel-CDN-Cache-Control": "no-store",
+  };
+}
 
 export async function GET(req: Request) {
   try {
@@ -16,20 +38,14 @@ export async function GET(req: Request) {
     if (!shop) {
       return NextResponse.json(
         { ok: false, error: "SHOPIFY_TEST_SHOP not set" },
-        { status: 500, headers: { "Cache-Control": "no-store" } }
+        { status: 500, headers: noCacheHeaders() }
       );
     }
 
-    // Parse ?windowDays= with safe bounds (30..365), default 120
-    const { searchParams } = new URL(req.url);
-    const raw = Number(searchParams.get("windowDays"));
-    const windowDays = Number.isFinite(raw)
-      ? Math.max(MIN_DAYS, Math.min(MAX_DAYS, raw))
-      : DEFAULT_WINDOW_DAYS;
-
+    const windowDays = parseWindowDays(req.url);
     const sql = getSql();
 
-    // Orders count (all-time for shop)
+    // Orders count (all-time)
     const [{ c: ordersCount }] = (await sql/*sql*/`
       select count(*)::int as c
       from orders
@@ -45,14 +61,14 @@ export async function GET(req: Request) {
         and o.created_at >= now() - make_interval(days => ${windowDays});
     `) as any;
 
-    // Total snapshots for shop
+    // Total snapshots
     const [{ c: totalSnapshots }] = (await sql/*sql*/`
       select count(*)::int as c
       from variant_snapshots
       where shop_domain = ${shop};
     `) as any;
 
-    // Top sellers (within window)
+    // Top sellers (window)
     const topSellers = (await sql/*sql*/`
       select
         oi.variant_id,
@@ -80,14 +96,19 @@ export async function GET(req: Request) {
           filtered_by_window: true,
           window_days: windowDays,
           bounds: { min: MIN_DAYS, max: MAX_DAYS },
+          // 👇 Debug so we can see which build is running
+          build: {
+            default_window_days: DEFAULT_WINDOW_DAYS,
+            ts: new Date().toISOString(),
+          },
         },
       },
-      { headers: { "Cache-Control": "no-store" } }
+      { headers: noCacheHeaders() }
     );
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, error: String(e?.message || e) },
-      { status: 500, headers: { "Cache-Control": "no-store" } }
+      { status: 500, headers: noCacheHeaders() }
     );
   }
 }
