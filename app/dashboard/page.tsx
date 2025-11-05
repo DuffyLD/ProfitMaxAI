@@ -28,10 +28,10 @@ export default async function Dashboard({
   const windows = [120, 180, 270, 365];
 
   return (
-    <main className="space-y-6">
+    <main className="space-y-6 p-6">
       <header className="space-y-2">
         <h1 className="text-3xl font-semibold">ProfitMaxAI — Dashboard</h1>
-        <p className="text-sm/6 opacity-80">
+        <p className="text-sm opacity-80">
           Connected shop:&nbsp;<span className="font-medium">{shop}</span>
         </p>
       </header>
@@ -44,8 +44,10 @@ export default async function Dashboard({
             <Link
               key={w}
               href={`/dashboard?windowDays=${w}`}
-              className={`px-3 py-1 rounded-md border ${
-                w === windowDays ? "bg-white/10 border-white/30" : "border-white/10"
+              className={`px-3 py-1 rounded-md border transition ${
+                w === windowDays
+                  ? "bg-white/10 border-white/30"
+                  : "border-white/10 hover:border-white/30"
               }`}
             >
               {w}d
@@ -62,12 +64,14 @@ export default async function Dashboard({
         </div>
 
         <div className="rounded-lg bg-[var(--card)] p-4">
-          <h3 className="font-medium">Unique variants sold ({windowDays}d)</h3>
+          <h3 className="font-medium">
+            Unique Variants Sold ({windowDays}d)
+          </h3>
           <p className="text-2xl mt-2">{num(metrics.unique_variants_sold_window)}</p>
         </div>
 
         <div className="rounded-lg bg-[var(--card)] p-4">
-          <h3 className="font-medium">Variant snapshots (total)</h3>
+          <h3 className="font-medium">Variant Snapshots (total)</h3>
           <p className="text-2xl mt-2">{num(metrics.variant_snapshots_total)}</p>
         </div>
       </section>
@@ -78,7 +82,11 @@ export default async function Dashboard({
         {!ok ? (
           <p className="text-sm opacity-80 mt-2">
             Endpoint issue — open{" "}
-            <a className="underline" href={`/api/dashboard-data?windowDays=${windowDays}`} target="_blank">
+            <a
+              className="underline"
+              href={`/api/dashboard-data?windowDays=${windowDays}`}
+              target="_blank"
+            >
               /api/dashboard-data?windowDays={windowDays}
             </a>
           </p>
@@ -117,4 +125,34 @@ export default async function Dashboard({
               href={`/api/recommendations?windowDays=${windowDays}`}
               target="_blank"
             >
-              /api
+              /api/recommendations?windowDays={windowDays}
+            </a>
+            &nbsp;)
+          </li>
+          <li>
+            Health check (&nbsp;
+            <a
+              className="underline"
+              href="/api/health/all"
+              target="_blank"
+            >
+              /api/health/all
+            </a>
+            &nbsp;)
+          </li>
+          <li>
+            Re-ingest last {windowDays}d (&nbsp;
+            <a
+              className="underline"
+              href={`/api/ingest/daily?days=${windowDays}`}
+              target="_blank"
+            >
+              /api/ingest/daily?days={windowDays}
+            </a>
+            &nbsp;)
+          </li>
+        </ul>
+      </section>
+    </main>
+  );
+}
