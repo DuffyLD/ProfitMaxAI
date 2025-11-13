@@ -1,288 +1,186 @@
 // app/dashboard/page.tsx
 import Link from "next/link";
 
-function num(n: any) {
-  const v = Number(n ?? 0);
-  return Number.isFinite(v) ? v.toLocaleString() : "0";
-}
-function price(n: any) {
-  const v = Number(n ?? 0);
-  return Number.isFinite(v) ? v.toFixed(2) : "—";
-}
-function chipHref(params: URLSearchParams, key: string, value: string) {
-  const p = new URLSearchParams(params);
-  p.set(key, value);
-  return `/dashboard?${p.toString()}`;
-}
+type TopSeller = { variant_id: string; qty_sold: number };
+type SlowMover = {
+  variant_id: string;
+  product_id: string;
+  current_price: string;
+  stock: number;
+  captured_at: string;
+  last_sold_at: string | null;
+  days_since_last_sale: number | null; // null => Never
+  qty_sold_window: number;
+  recommended_action: { type: "price_decrease"; discount_pct: number; suggested_price: number | null };
+};
 
 export default async function Dashboard({
   searchParams,
 }: {
-  searchParams?: { [k: string]: string | string[] | undefined };
+  searchParams?: Record<string, string | string[] | undefined>;
 }) {
-  const sp = new URLSearchParams();
-  // read current knobs from URL
-  const winRaw = Number(searchParams?.windowDays);
-  const windowDays = Number.isFinite(winRaw) ? Math.max(30, Math.min(365, winRaw)) : 120;
+  const windowDays = Number(searchParams?.windowDays ?? 120);
+  const minStock = Number(searchParams?.minStock ?? 20);
+  const inactivityDays = Number(searchParams?.inactivityDays ?? 60);
+  const discountPct = Number(searchParams?.discountPct ?? -10);
+  const maxSalesInWindow = Number(searchParams?.maxSalesInWindow ?? 1);
 
-  const minStock = Number.isFinite(Number(searchParams?.minStock))
-    ? Number(searchParams?.minStock) as number
-    : 20;
-  const inactivityDays = Number.isFinite(Number(searchParams?.inactivityDays))
-    ? Number(searchParams?.inactivityDays) as number
-    : 60;
-  const discountPct = Number.isFinite(Number(searchParams?.discountPct))
-    ? Number(searchParams?.discountPct) as number
-    : -5;
+  const qs = new URLSearchParams({
+    windowDays: String(windowDays),
+    minStock: String(minStock),
+    inactivityDays: String(inactivityDays),
+    discountPct: String(discountPct),
+    maxSalesInWindow: String(maxSalesInWindow),
+    t: "force", // avoid cached edge responses
+  }).toString();
 
-  sp.set("windowDays", String(windowDays));
-  sp.set("minStock", String(minStock));
-  sp.set("inactivityDays", String(inactivityDays));
-  sp.set("discountPct", String(discountPct));
+  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/dashboard-data?${qs}`, {
+    cache: "no-store",
+  });
+  const data = await res.json();
 
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "";
-  const apiUrl = `${baseUrl}/api/dashboard-data?${sp.toString()}`;
-
-  const res = await fetch(apiUrl, { cache: "no-store" });
-  const data = await res.json().catch(() => ({} as any));
-
-  const ok = !!data?.ok;
+  const top: TopSeller[] = data?.top_sellers ?? [];
+  const slows: SlowMover[] = data?.slow_movers ?? [];
   const shop = data?.shop ?? "—";
-  const metrics = data?.metrics ?? {};
-  const top = Array.isArray(data?.top_sellers) ? data.top_sellers : [];
-  const slow = Array.isArray(data?.slow_movers) ? data.slow_movers : [];
 
-  const windows = [120, 180, 270, 365];
-  const minStockPresets = [10, 20, 50];
-  const inactivityPresets = [30, 60, 120];
-  const discountPresets = [-5, -10, -15];
-
-  const currentParams = new URLSearchParams(sp);
+  const link = (patch: Record<string, string | number>) => {
+    const p = new URLSearchParams({ ...Object.fromEntries(new URLSearchParams(qs)), ...Object.entries(patch).reduce((a,[k,v])=>{a[k]=String(v);return a;},{} as any) });
+    return `/dashboard?${p.toString()}`;
+  };
 
   return (
-    <main className="space-y-6 p-6">
-      <header className="space-y-2">
-        <h1 className="text-3xl font-semibold">ProfitMaxAI — Dashboard</h1>
-        <p className="text-sm opacity-80">
-          Connected shop:&nbsp;<span className="font-medium">{shop}</span>
-        </p>
-      </header>
+    <main className="prose prose-sm max-w-none p-6">
+      <h1>ProfitMaxAI — Dashboard</h1>
+      <p>Connected shop: {shop}</p>
 
-      {/* Window selector */}
-      <section className="flex items-center gap-3">
-        <span className="opacity-80 text-sm">Window:</span>
-        <div className="flex gap-2">
-          {windows.map((w) => {
-            const p = new URLSearchParams(currentParams);
-            p.set("windowDays", String(w));
-            return (
-              <Link
-                key={w}
-                href={`/dashboard?${p.toString()}`}
-                className={`px-3 py-1 rounded-md border transition ${
-                  w === windowDays
-                    ? "bg-white/10 border-white/30"
-                    : "border-white/10 hover:border-white/30"
-                }`}
-              >
-                {w}d
-              </Link>
-            );
-          })}
-        </div>
-      </section>
+      {/* Window quick links */}
+      <p>
+        Window:&nbsp;
+        {[120, 180, 270, 365].map(d => (
+          <Link key={d} href={link({ windowDays: d })} className="underline mr-2">
+            {d}d
+          </Link>
+        ))}
+      </p>
 
-      {/* KPIs */}
-      <section className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-lg bg-[var(--card)] p-4">
-          <h3 className="font-medium">Orders in DB</h3>
-          <p className="text-2xl mt-2">{num(metrics.orders_in_db)}</p>
-        </div>
+      {/* Headline metrics */}
+      <h2>Orders in DB</h2>
+      <p>{data?.metrics?.orders_in_db ?? 0}</p>
 
-        <div className="rounded-lg bg-[var(--card)] p-4">
-          <h3 className="font-medium">Unique Variants Sold ({windowDays}d)</h3>
-          <p className="text-2xl mt-2">{num(metrics.unique_variants_sold_window)}</p>
-        </div>
+      <h2>Unique Variants Sold ({windowDays}d)</h2>
+      <p>{data?.metrics?.unique_variants_sold_window ?? 0}</p>
 
-        <div className="rounded-lg bg-[var(--card)] p-4">
-          <h3 className="font-medium">Variant Snapshots (total)</h3>
-          <p className="text-2xl mt-2">{num(metrics.variant_snapshots_total)}</p>
-        </div>
-      </section>
+      <h2>Variant Snapshots (total)</h2>
+      <p>{data?.metrics?.variant_snapshots_total ?? 0}</p>
 
       {/* Top sellers */}
-      <section className="rounded-lg bg-[var(--card)] p-4">
-        <h3 className="font-medium">Top Sellers ({windowDays}d)</h3>
-        {!ok ? (
-          <p className="text-sm opacity-80 mt-2">
-            Endpoint issue — open{" "}
-            <a
-              className="underline"
-              href={`/api/dashboard-data?windowDays=${windowDays}`}
-              target="_blank"
-            >
-              /api/dashboard-data?windowDays={windowDays}
-            </a>
-          </p>
-        ) : top.length === 0 ? (
-          <p className="text-sm opacity-80 mt-2">No sales in this window.</p>
-        ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="opacity-70 text-left">
-                <tr>
-                  <th className="py-2 pr-4">Variant ID</th>
-                  <th className="py-2 pr-4">Qty Sold</th>
-                </tr>
-              </thead>
-              <tbody>
-                {top.map((row: any) => (
-                  <tr key={row.variant_id} className="border-t border-white/10">
-                    <td className="py-2 pr-4 font-mono">{row.variant_id}</td>
-                    <td className="py-2 pr-4">{num(row.qty_sold)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      <h2>Top Sellers ({windowDays}d)</h2>
+      {top.length === 0 ? (
+        <p>No sellers in window.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Variant ID</th><th>Qty Sold</th></tr>
+          </thead>
+          <tbody>
+            {top.map(t => (
+              <tr key={t.variant_id}>
+                <td>{t.variant_id}</td>
+                <td>{t.qty_sold}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       {/* Slow movers controls */}
-      <section className="rounded-lg bg-[var(--card)] p-4 space-y-4">
-        <h3 className="font-medium">Slow Movers</h3>
-        <div className="grid gap-3 md:grid-cols-3">
-          <div>
-            <div className="opacity-80 text-sm mb-2">Min Stock</div>
-            <div className="flex gap-2">
-              {minStockPresets.map((ms) => (
-                <Link
-                  key={ms}
-                  href={chipHref(currentParams, "minStock", String(ms))}
-                  className={`px-3 py-1 rounded-md border transition ${
-                    ms === minStock ? "bg-white/10 border-white/30" : "border-white/10 hover:border-white/30"
-                  }`}
-                >
-                  ≥ {ms}
-                </Link>
-              ))}
-            </div>
-          </div>
-          <div>
-            <div className="opacity-80 text-sm mb-2">Inactivity (days)</div>
-            <div className="flex gap-2">
-              {inactivityPresets.map((d) => (
-                <Link
-                  key={d}
-                  href={chipHref(currentParams, "inactivityDays", String(d))}
-                  className={`px-3 py-1 rounded-md border transition ${
-                    d === inactivityDays ? "bg-white/10 border-white/30" : "border-white/10 hover:border-white/30"
-                  }`}
-                >
-                  ≥ {d}d
-                </Link>
-              ))}
-            </div>
-          </div>
-          <div>
-            <div className="opacity-80 text-sm mb-2">Recommended Discount</div>
-            <div className="flex gap-2">
-              {discountPresets.map((p) => (
-                <Link
-                  key={p}
-                  href={chipHref(currentParams, "discountPct", String(p))}
-                  className={`px-3 py-1 rounded-md border transition ${
-                    p === discountPct ? "bg-white/10 border-white/30" : "border-white/10 hover:border-white/30"
-                  }`}
-                >
-                  {p}%
-                </Link>
-              ))}
-            </div>
-          </div>
-        </div>
+      <h2>Slow Movers</h2>
+      <div>
+        <div>Min Stock</div>
+        {[10, 20, 50].map(n => (
+          <Link key={n} href={link({ minStock: n })} className="underline mr-2">
+            ≥ {n}
+          </Link>
+        ))}
+      </div>
+      <div className="mt-1">Inactivity (days)</div>
+      {[30, 60, 120].map(n => (
+        <Link key={n} href={link({ inactivityDays: n })} className="underline mr-2">
+          ≥ {n}d
+        </Link>
+      ))}
+      <div className="mt-1">Recommended Discount</div>
+      {[-5, -10, -15].map(n => (
+        <Link key={n} href={link({ discountPct: n })} className="underline mr-2">
+          {n}%
+        </Link>
+      ))}
+      <div className="mt-1">Max sales in window</div>
+      {[0, 1, 2, 5].map(n => (
+        <Link key={n} href={link({ maxSalesInWindow: n })} className="underline mr-2">
+          ≤{n}
+        </Link>
+      ))}
 
-        {/* Slow movers table */}
-        {!ok ? (
-          <p className="text-sm opacity-80 mt-2">
-            Endpoint issue — open{" "}
-            <a
-              className="underline"
-              href={`/api/dashboard-data?windowDays=${windowDays}&minStock=${minStock}&inactivityDays=${inactivityDays}&discountPct=${discountPct}`}
-              target="_blank"
-            >
-              /api/dashboard-data?…
-            </a>
-          </p>
-        ) : slow.length === 0 ? (
-          <p className="text-sm opacity-80">No slow movers at current thresholds.</p>
-        ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="opacity-70 text-left">
-                <tr>
-                  <th className="py-2 pr-4">Variant ID</th>
-                  <th className="py-2 pr-4">Stock</th>
-                  <th className="py-2 pr-4">Days Since Last Sale</th>
-                  <th className="py-2 pr-4">Current Price</th>
-                  <th className="py-2 pr-4">Suggested Price ({discountPct}%)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {slow.map((row: any) => (
-                  <tr key={row.variant_id} className="border-t border-white/10">
-                    <td className="py-2 pr-4 font-mono">{row.variant_id}</td>
-                    <td className="py-2 pr-4">{num(row.stock)}</td>
-                    <td className="py-2 pr-4">{num(row.days_since_last_sale)}</td>
-                    <td className="py-2 pr-4">${price(row.current_price)}</td>
-                    <td className="py-2 pr-4">
-                      {row.recommended_action?.suggested_price
-                        ? `$${price(row.recommended_action.suggested_price)}`
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      {/* Slow movers table */}
+      {slows.length === 0 ? (
+        <p className="mt-3">No slow movers with current filters.</p>
+      ) : (
+        <table className="mt-3">
+          <thead>
+            <tr>
+              <th>Variant ID</th>
+              <th>Stock</th>
+              <th>Days Since Last Sale</th>
+              <th>Sales In Window</th>
+              <th>Current Price</th>
+              <th>Suggested Price ({discountPct}%)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {slows.map(v => (
+              <tr key={v.variant_id}>
+                <td>{v.variant_id}</td>
+                <td>{v.stock}</td>
+                <td>{v.days_since_last_sale === null ? "Never" : v.days_since_last_sale}</td>
+                <td>{v.qty_sold_window}</td>
+                <td>${Number(v.current_price).toFixed(2)}</td>
+                <td>
+                  {v.recommended_action.suggested_price !== null
+                    ? `$${v.recommended_action.suggested_price.toFixed(2)}`
+                    : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
 
       {/* Quick actions */}
-      <section className="rounded-lg bg-[var(--card)] p-4 space-y-2">
-        <h3 className="font-medium">Quick Actions</h3>
-        <ul className="list-disc pl-5 text-sm">
-          <li>
-            View pricing recommendations (&nbsp;
-            <a
-              className="underline"
-              href={`/api/recommendations?windowDays=${windowDays}`}
-              target="_blank"
-            >
-              /api/recommendations?windowDays={windowDays}
-            </a>
-            &nbsp;)
-          </li>
-          <li>
-            Health check (&nbsp;
-            <a className="underline" href="/api/health/all" target="_blank">
-              /api/health/all
-            </a>
-            &nbsp;)
-          </li>
-          <li>
-            Re-ingest last {windowDays}d (&nbsp;
-            <a
-              className="underline"
-              href={`/api/ingest/daily?days=${windowDays}`}
-              target="_blank"
-            >
-              /api/ingest/daily?days={windowDays}
-            </a>
-            &nbsp;)
-          </li>
-        </ul>
-      </section>
+      <h3>Quick Actions</h3>
+      <ul>
+        <li>
+          View pricing recommendations (
+          <a className="underline" href={`/api/recommendations?windowDays=${windowDays}`} target="_blank">
+            /api/recommendations?windowDays={windowDays}
+          </a>
+          )
+        </li>
+        <li>
+          Health check (
+          <a className="underline" href="/api/health/all" target="_blank">
+            /api/health/all
+          </a>
+          )
+        </li>
+        <li>
+          Re-ingest last {windowDays}d (
+          <a className="underline" href={`/api/ingest/daily?days=${windowDays}`} target="_blank">
+            /api/ingest/daily?days={windowDays}
+          </a>
+          )
+        </li>
+      </ul>
     </main>
   );
 }
