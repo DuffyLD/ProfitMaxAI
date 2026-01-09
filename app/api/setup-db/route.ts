@@ -132,6 +132,10 @@ export async function GET() {
       );
     `;
 
+    // ✅ NEW: add titles for dashboard display (idempotent)
+    await sql/*sql*/`alter table variant_snapshots add column if not exists product_title text;`;
+    await sql/*sql*/`alter table variant_snapshots add column if not exists variant_title text;`;
+
     // ---------------------------
     // rec_logs
     // ---------------------------
