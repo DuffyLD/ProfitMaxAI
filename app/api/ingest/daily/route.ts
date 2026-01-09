@@ -26,38 +26,9 @@ async function fetchShopifyJson(shop: string, token: string, path: string) {
   const url = `https://${shop}/admin/api/${API_VERSION}${path}`;
   const res = await fetch(url, { headers: { "X-Shopify-Access-Token": token } });
   let body: any = null;
-  try {
-    body = await res.json();
-  } catch {}
-  if (!res.ok) throw new Error(`HTTP ${res.status} @ ${path} :: ${JSON.stringify(body)?.slice(0, 200)}`);
+  try { body = await res.json(); } catch {}
+  if (!res.ok) throw new Error(`HTTP ${res.status} @ ${path} :: ${JSON.stringify(body)?.slice(0,200)}`);
   return body;
-}
-
-async function fetchShopifyGraphQL(shop: string, token: string, query: string, variables?: any) {
-  const url = `https://${shop}/admin/api/${API_VERSION}/graphql.json`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": token,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, variables: variables || {} }),
-  });
-
-  const json = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(`HTTP ${res.status} @ graphql :: ${JSON.stringify(json)?.slice(0, 300)}`);
-
-  if (json?.errors?.length) {
-    throw new Error(`GraphQL errors :: ${JSON.stringify(json.errors)?.slice(0, 300)}`);
-  }
-
-  return json;
-}
-
-function gidToNumericId(gid: string | null | undefined): string | null {
-  if (!gid || typeof gid !== "string") return null;
-  const parts = gid.split("/");
-  return parts.length ? parts[parts.length - 1] : null;
 }
 
 export async function GET(req: Request) {
@@ -66,7 +37,7 @@ export async function GET(req: Request) {
     const token = process.env.SHOPIFY_TEST_TOKEN!;
     if (!shop || !token) {
       return NextResponse.json(
-        { ok: false, error: "Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" },
+        { ok:false, error:"Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" },
         { status: 500 }
       );
     }
@@ -84,11 +55,8 @@ export async function GET(req: Request) {
 
     // 1) Orders (one page for MVP)
     const ordersResp = await fetchShopifyJson(
-      shop,
-      token,
-      `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(
-        createdMin
-      )}&fields=id,created_at,total_price,line_items`
+      shop, token,
+      `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,total_price,line_items`
     );
     const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
 
@@ -116,55 +84,45 @@ export async function GET(req: Request) {
       }
     }
 
-    // 2) Variant snapshots (GraphQL, first 250 variants)
-    const gql = `
-      query VariantSnapshots($first: Int!, $after: String) {
-        productVariants(first: $first, after: $after) {
-          pageInfo { hasNextPage endCursor }
-          edges {
-            node {
-              id
-              title
-              price
-              inventoryQuantity
-              product {
-                id
-                title
-              }
-            }
-          }
-        }
+    // 2) Variant snapshots WITH TITLES
+    // Use products endpoint so we get product title + variant title.
+    // (One page MVP: up to 250 products; enough for now.)
+    const productsResp = await fetchShopifyJson(
+      shop, token,
+      `/products.json?limit=250&fields=id,title,variants`
+    );
+    const products: any[] = Array.isArray(productsResp?.products) ? productsResp.products : [];
+
+    let variantsInserted = 0;
+
+    for (const p of products) {
+      const productId = p?.id;
+      const productTitle = p?.title ?? null;
+      const variants: any[] = Array.isArray(p?.variants) ? p.variants : [];
+
+      for (const v of variants) {
+        await sql/*sql*/`
+          insert into variant_snapshots (
+            shop_domain,
+            variant_id,
+            product_id,
+            price,
+            inventory_quantity,
+            product_title,
+            variant_title
+          )
+          values (
+            ${shop},
+            ${v.id},
+            ${productId || v.product_id},
+            ${v.price || null},
+            ${v.inventory_quantity || 0},
+            ${productTitle},
+            ${v.title || null}
+          );
+        `;
+        variantsInserted++;
       }
-    `;
-
-    const first = 250;
-    let after: string | null = null;
-    let totalVariantsInserted = 0;
-
-    // For MVP, do 1 page only (keeps it fast + simple)
-    const resp = await fetchShopifyGraphQL(shop, token, gql, { first, after });
-    const edges = resp?.data?.productVariants?.edges || [];
-
-    for (const e of edges) {
-      const n = e?.node;
-      const variantId = gidToNumericId(n?.id);
-      const productId = gidToNumericId(n?.product?.id);
-      const productTitle = n?.product?.title ?? null;
-      const variantTitle = n?.title ?? null;
-      const price = n?.price ?? null;
-      const invQty = Number(n?.inventoryQuantity ?? 0);
-
-      if (!variantId || !productId) continue;
-
-      await sql/*sql*/`
-        insert into variant_snapshots (
-          shop_domain, variant_id, product_id, price, inventory_quantity, product_title, variant_title
-        )
-        values (
-          ${shop}, ${variantId}, ${productId}, ${price || null}, ${invQty}, ${productTitle}, ${variantTitle}
-        );
-      `;
-      totalVariantsInserted++;
     }
 
     return NextResponse.json({
@@ -172,11 +130,11 @@ export async function GET(req: Request) {
       ingested: {
         orders: orders.length,
         order_items: itemsInserted,
-        variant_snapshots: totalVariantsInserted,
+        variant_snapshots: variantsInserted,
         window_days: days,
-      },
+      }
     });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json({ ok:false, error: String(e?.message || e) }, { status: 500 });
   }
 }
