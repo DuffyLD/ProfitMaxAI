@@ -26,8 +26,10 @@ async function fetchShopifyJson(shop: string, token: string, path: string) {
   const url = `https://${shop}/admin/api/${API_VERSION}${path}`;
   const res = await fetch(url, { headers: { "X-Shopify-Access-Token": token } });
   let body: any = null;
-  try { body = await res.json(); } catch {}
-  if (!res.ok) throw new Error(`HTTP ${res.status} @ ${path} :: ${JSON.stringify(body)?.slice(0,200)}`);
+  try {
+    body = await res.json();
+  } catch {}
+  if (!res.ok) throw new Error(`HTTP ${res.status} @ ${path} :: ${JSON.stringify(body)?.slice(0, 200)}`);
   return body;
 }
 
@@ -37,7 +39,7 @@ export async function GET(req: Request) {
     const token = process.env.SHOPIFY_TEST_TOKEN!;
     if (!shop || !token) {
       return NextResponse.json(
-        { ok:false, error:"Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" },
+        { ok: false, error: "Missing SHOPIFY_TEST_SHOP or SHOPIFY_TEST_TOKEN" },
         { status: 500 }
       );
     }
@@ -53,13 +55,18 @@ export async function GET(req: Request) {
       on conflict (shop_domain) do nothing;
     `;
 
+    // --------------------------
     // 1) Orders (one page for MVP)
+    // --------------------------
     const ordersResp = await fetchShopifyJson(
-      shop, token,
-      `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(createdMin)}&fields=id,created_at,total_price,line_items`
+      shop,
+      token,
+      `/orders.json?status=any&limit=50&created_at_min=${encodeURIComponent(
+        createdMin
+      )}&fields=id,created_at,total_price,line_items`
     );
-    const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
 
+    const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
     let itemsInserted = 0;
 
     for (const o of orders) {
@@ -84,45 +91,74 @@ export async function GET(req: Request) {
       }
     }
 
+    // --------------------------
     // 2) Variant snapshots WITH TITLES
-    // Use products endpoint so we get product title + variant title.
-    // (One page MVP: up to 250 products; enough for now.)
+    // We fetch products (includes variants) so we can save:
+    // - product_title
+    // - variant_title
+    // --------------------------
     const productsResp = await fetchShopifyJson(
-      shop, token,
+      shop,
+      token,
       `/products.json?limit=250&fields=id,title,variants`
     );
+
     const products: any[] = Array.isArray(productsResp?.products) ? productsResp.products : [];
 
-    let variantsInserted = 0;
+    // Flatten all variants into a list we can insert
+    type FlatVariant = {
+      variant_id: number;
+      product_id: number;
+      price: string | null;
+      inventory_quantity: number;
+      product_title: string | null;
+      variant_title: string | null;
+    };
+
+    const flatVariants: FlatVariant[] = [];
 
     for (const p of products) {
-      const productId = p?.id;
-      const productTitle = p?.title ?? null;
+      const productId = Number(p?.id);
+      const productTitle = typeof p?.title === "string" ? p.title : null;
       const variants: any[] = Array.isArray(p?.variants) ? p.variants : [];
 
       for (const v of variants) {
-        await sql/*sql*/`
-          insert into variant_snapshots (
-            shop_domain,
-            variant_id,
-            product_id,
-            price,
-            inventory_quantity,
-            product_title,
-            variant_title
-          )
-          values (
-            ${shop},
-            ${v.id},
-            ${productId || v.product_id},
-            ${v.price || null},
-            ${v.inventory_quantity || 0},
-            ${productTitle},
-            ${v.title || null}
-          );
-        `;
-        variantsInserted++;
+        const variantId = Number(v?.id);
+        if (!variantId || !productId) continue;
+
+        flatVariants.push({
+          variant_id: variantId,
+          product_id: productId,
+          price: v?.price != null ? String(v.price) : null,
+          inventory_quantity: Number(v?.inventory_quantity ?? 0),
+          product_title: productTitle,
+          variant_title: typeof v?.title === "string" ? v.title : null,
+        });
       }
+    }
+
+    // Insert snapshots
+    for (const v of flatVariants) {
+      await sql/*sql*/`
+        insert into variant_snapshots (
+          shop_domain,
+          variant_id,
+          product_id,
+          price,
+          inventory_quantity,
+          product_title,
+          variant_title
+        )
+        values (
+          ${shop},
+          ${v.variant_id},
+          ${v.product_id},
+          ${v.price},
+          ${v.inventory_quantity},
+          ${v.product_title},
+          ${v.variant_title}
+        );
+      `;
     }
 
     return NextResponse.json({
@@ -130,11 +166,11 @@ export async function GET(req: Request) {
       ingested: {
         orders: orders.length,
         order_items: itemsInserted,
-        variant_snapshots: variantsInserted,
+        variant_snapshots: flatVariants.length,
         window_days: days,
-      }
+      },
     });
   } catch (e: any) {
-    return NextResponse.json({ ok:false, error: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
