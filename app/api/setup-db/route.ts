@@ -17,7 +17,6 @@ export async function GET() {
         created_at      timestamptz default now()
       );
     `;
-    // ensure nullable (we don't store it in tests)
     await sql/*sql*/`alter table shops alter column access_token drop not null;`;
 
     // ---------------------------
@@ -31,7 +30,6 @@ export async function GET() {
         total_price     numeric
       );
     `;
-    // ensure columns (idempotent)
     await sql/*sql*/`alter table orders add column if not exists created_at timestamptz;`;
     await sql/*sql*/`alter table orders add column if not exists total_price numeric;`;
     await sql/*sql*/`alter table orders add column if not exists shop_domain text;`;
@@ -48,6 +46,7 @@ export async function GET() {
           where table_schema='public' and table_name='orders' and column_name='id'
         ) as has_id;
     ` as any;
+
     const hasOrderId = !!legacyOrders?.[0]?.has_order_id;
     const hasId      = !!legacyOrders?.[0]?.has_id;
 
@@ -58,7 +57,6 @@ export async function GET() {
       await sql/*sql*/`alter table orders drop column if exists order_id;`;
     }
 
-    // ensure unique index for ON CONFLICT
     await sql/*sql*/`create unique index if not exists idx_orders_id_unique on orders(id);`;
 
     // ---------------------------
@@ -72,12 +70,11 @@ export async function GET() {
         primary key (order_id, variant_id)
       );
     `;
-    // ensure backing unique index for ON CONFLICT
     await sql/*sql*/`
       create unique index if not exists idx_order_items_unique on order_items(order_id, variant_id);
     `;
 
-    // LEGACY HEAL #1: drop unused line_id if it exists (often NOT NULL in old schemas)
+    // legacy heal for order_items
     const legacyItemsCols = await sql/*sql*/`
       select
         exists(
@@ -94,11 +91,9 @@ export async function GET() {
     const hasShopDomainInItems = !!legacyItemsCols?.[0]?.has_shop_domain;
 
     if (hasLineId) {
-      // Drop any legacy column we don't use
       await sql/*sql*/`alter table order_items drop column if exists line_id;`;
     }
 
-    // LEGACY HEAL #2: make order_items.shop_domain nullable and backfill from orders
     if (hasShopDomainInItems) {
       await sql/*sql*/`alter table order_items alter column shop_domain drop not null;`;
       await sql/*sql*/`
@@ -108,13 +103,6 @@ export async function GET() {
         where oi.order_id = o.id
           and (oi.shop_domain is null or oi.shop_domain = '');
       `;
-      // (Optional FK; not required for MVP)
-      // await sql/*sql*/`
-      //   alter table order_items
-      //   drop constraint if exists order_items_shop_domain_fkey,
-      //   add constraint order_items_shop_domain_fkey
-      //   foreign key (shop_domain) references shops(shop_domain) on delete cascade;
-      // `;
     }
 
     // ---------------------------
@@ -132,9 +120,13 @@ export async function GET() {
       );
     `;
 
-    // ✅ NEW: add titles for dashboard display (idempotent)
+    // ✅ ADD THESE (this is the missing piece)
     await sql/*sql*/`alter table variant_snapshots add column if not exists product_title text;`;
     await sql/*sql*/`alter table variant_snapshots add column if not exists variant_title text;`;
+
+    // optional but helpful for lookup speed
+    await sql/*sql*/`create index if not exists idx_variant_snapshots_variant_id on variant_snapshots(variant_id);`;
+    await sql/*sql*/`create index if not exists idx_variant_snapshots_product_id on variant_snapshots(product_id);`;
 
     // ---------------------------
     // rec_logs
@@ -161,7 +153,10 @@ export async function GET() {
       on conflict (shop_domain) do nothing;
     `;
 
-    return NextResponse.json({ ok: true, message: "Schema ensured + legacy healed (orders, order_items)." });
+    return NextResponse.json({
+      ok: true,
+      message: "Schema ensured + legacy healed (orders, order_items) + added titles to variant_snapshots.",
+    });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
