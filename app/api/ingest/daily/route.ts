@@ -55,9 +55,7 @@ export async function GET(req: Request) {
       on conflict (shop_domain) do nothing;
     `;
 
-    // --------------------------
     // 1) Orders (one page for MVP)
-    // --------------------------
     const ordersResp = await fetchShopifyJson(
       shop,
       token,
@@ -65,8 +63,8 @@ export async function GET(req: Request) {
         createdMin
       )}&fields=id,created_at,total_price,line_items`
     );
-
     const orders: any[] = Array.isArray(ordersResp?.orders) ? ordersResp.orders : [];
+
     let itemsInserted = 0;
 
     for (const o of orders) {
@@ -91,12 +89,9 @@ export async function GET(req: Request) {
       }
     }
 
-    // --------------------------
     // 2) Variant snapshots WITH TITLES
-    // We fetch products (includes variants) so we can save:
-    // - product_title
-    // - variant_title
-    // --------------------------
+    // IMPORTANT: products.json includes product title + variants[] with variant titles.
+    // For MVP, we do 1 page (limit=250). Good enough for your dev shop.
     const productsResp = await fetchShopifyJson(
       shop,
       token,
@@ -105,60 +100,31 @@ export async function GET(req: Request) {
 
     const products: any[] = Array.isArray(productsResp?.products) ? productsResp.products : [];
 
-    // Flatten all variants into a list we can insert
-    type FlatVariant = {
-      variant_id: number;
-      product_id: number;
-      price: string | null;
-      inventory_quantity: number;
-      product_title: string | null;
-      variant_title: string | null;
-    };
-
-    const flatVariants: FlatVariant[] = [];
+    let snapshotsInserted = 0;
 
     for (const p of products) {
-      const productId = Number(p?.id);
+      const productId = p?.id;
       const productTitle = typeof p?.title === "string" ? p.title : null;
       const variants: any[] = Array.isArray(p?.variants) ? p.variants : [];
 
       for (const v of variants) {
-        const variantId = Number(v?.id);
+        const variantId = v?.id;
         if (!variantId || !productId) continue;
 
-        flatVariants.push({
-          variant_id: variantId,
-          product_id: productId,
-          price: v?.price != null ? String(v.price) : null,
-          inventory_quantity: Number(v?.inventory_quantity ?? 0),
-          product_title: productTitle,
-          variant_title: typeof v?.title === "string" ? v.title : null,
-        });
-      }
-    }
+        const variantTitle = typeof v?.title === "string" ? v.title : null;
+        const price = v?.price ?? null;
+        const inventoryQty = Number(v?.inventory_quantity ?? 0);
 
-    // Insert snapshots
-    for (const v of flatVariants) {
-      await sql/*sql*/`
-        insert into variant_snapshots (
-          shop_domain,
-          variant_id,
-          product_id,
-          price,
-          inventory_quantity,
-          product_title,
-          variant_title
-        )
-        values (
-          ${shop},
-          ${v.variant_id},
-          ${v.product_id},
-          ${v.price},
-          ${v.inventory_quantity},
-          ${v.product_title},
-          ${v.variant_title}
-        );
-      `;
+        await sql/*sql*/`
+          insert into variant_snapshots (
+            shop_domain, variant_id, product_id, price, inventory_quantity, product_title, variant_title
+          )
+          values (
+            ${shop}, ${variantId}, ${productId}, ${price}, ${inventoryQty}, ${productTitle}, ${variantTitle}
+          );
+        `;
+        snapshotsInserted++;
+      }
     }
 
     return NextResponse.json({
@@ -166,7 +132,7 @@ export async function GET(req: Request) {
       ingested: {
         orders: orders.length,
         order_items: itemsInserted,
-        variant_snapshots: flatVariants.length,
+        variant_snapshots: snapshotsInserted,
         window_days: days,
       },
     });
