@@ -1,7 +1,13 @@
 // app/dashboard/page.tsx
 import Link from "next/link";
 
-type TopSeller = { variant_id: string; qty_sold: number };
+type TopSeller = {
+  variant_id: string;
+  qty_sold: number;
+  product_title?: string | null;
+  variant_title?: string | null;
+};
+
 type SlowMover = {
   variant_id: string;
   product_id: string;
@@ -11,7 +17,13 @@ type SlowMover = {
   last_sold_at: string | null;
   days_since_last_sale: number | null; // null => Never
   qty_sold_window: number;
-  recommended_action: { type: "price_decrease"; discount_pct: number; suggested_price: number | null };
+  product_title?: string | null;
+  variant_title?: string | null;
+  recommended_action: {
+    type: "price_decrease";
+    discount_pct: number;
+    suggested_price: number | null;
+  };
 };
 
 export default async function Dashboard({
@@ -34,9 +46,10 @@ export default async function Dashboard({
     t: "force", // avoid cached edge responses
   }).toString();
 
-  const res = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/dashboard-data?${qs}`, {
-    cache: "no-store",
-  });
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_BASE_URL || ""}/api/dashboard-data?${qs}`,
+    { cache: "no-store" }
+  );
   const data = await res.json();
 
   const top: TopSeller[] = data?.top_sellers ?? [];
@@ -44,8 +57,19 @@ export default async function Dashboard({
   const shop = data?.shop ?? "—";
 
   const link = (patch: Record<string, string | number>) => {
-    const p = new URLSearchParams({ ...Object.fromEntries(new URLSearchParams(qs)), ...Object.entries(patch).reduce((a,[k,v])=>{a[k]=String(v);return a;},{} as any) });
+    const p = new URLSearchParams({
+      ...Object.fromEntries(new URLSearchParams(qs)),
+      ...Object.entries(patch).reduce((a, [k, v]) => {
+        (a as any)[k] = String(v);
+        return a;
+      }, {} as any),
+    });
     return `/dashboard?${p.toString()}`;
+  };
+
+  const fmtMoney = (v: any) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? `$${n.toFixed(2)}` : "—";
   };
 
   return (
@@ -56,7 +80,7 @@ export default async function Dashboard({
       {/* Window quick links */}
       <p>
         Window:&nbsp;
-        {[120, 180, 270, 365].map(d => (
+        {[120, 180, 270, 365].map((d) => (
           <Link key={d} href={link({ windowDays: d })} className="underline mr-2">
             {d}d
           </Link>
@@ -80,12 +104,20 @@ export default async function Dashboard({
       ) : (
         <table>
           <thead>
-            <tr><th>Variant ID</th><th>Qty Sold</th></tr>
+            <tr>
+              <th>Product</th>
+              <th>Sales ({windowDays}d)</th>
+            </tr>
           </thead>
           <tbody>
-            {top.map(t => (
+            {top.map((t) => (
               <tr key={t.variant_id}>
-                <td>{t.variant_id}</td>
+                <td>
+                  <div className="font-medium">
+                    🔥 {t.product_title ?? "Unknown Product"}
+                  </div>
+                  <div className="text-xs text-gray-500">{t.variant_title ?? ""}</div>
+                </td>
                 <td>{t.qty_sold}</td>
               </tr>
             ))}
@@ -97,26 +129,26 @@ export default async function Dashboard({
       <h2>Slow Movers</h2>
       <div>
         <div>Min Stock</div>
-        {[10, 20, 50].map(n => (
+        {[10, 20, 50].map((n) => (
           <Link key={n} href={link({ minStock: n })} className="underline mr-2">
             ≥ {n}
           </Link>
         ))}
       </div>
       <div className="mt-1">Inactivity (days)</div>
-      {[30, 60, 120].map(n => (
+      {[30, 60, 120].map((n) => (
         <Link key={n} href={link({ inactivityDays: n })} className="underline mr-2">
           ≥ {n}d
         </Link>
       ))}
       <div className="mt-1">Recommended Discount</div>
-      {[-5, -10, -15].map(n => (
+      {[-5, -10, -15].map((n) => (
         <Link key={n} href={link({ discountPct: n })} className="underline mr-2">
           {n}%
         </Link>
       ))}
       <div className="mt-1">Max sales in window</div>
-      {[0, 1, 2, 5].map(n => (
+      {[0, 1, 2, 5].map((n) => (
         <Link key={n} href={link({ maxSalesInWindow: n })} className="underline mr-2">
           ≤{n}
         </Link>
@@ -129,25 +161,35 @@ export default async function Dashboard({
         <table className="mt-3">
           <thead>
             <tr>
-              <th>Variant ID</th>
-              <th>Stock</th>
-              <th>Days Since Last Sale</th>
-              <th>Sales In Window</th>
+              <th>Product</th>
+              <th>Stock on Hand</th>
+              <th>Last Sold</th>
+              <th>Sales ({windowDays}d)</th>
               <th>Current Price</th>
               <th>Suggested Price ({discountPct}%)</th>
             </tr>
           </thead>
           <tbody>
-            {slows.map(v => (
+            {slows.map((v) => (
               <tr key={v.variant_id}>
-                <td>{v.variant_id}</td>
-                <td>{v.stock}</td>
-                <td>{v.days_since_last_sale === null ? "Never" : v.days_since_last_sale}</td>
-                <td>{v.qty_sold_window}</td>
-                <td>${Number(v.current_price).toFixed(2)}</td>
                 <td>
-                  {v.recommended_action.suggested_price !== null
-                    ? `$${v.recommended_action.suggested_price.toFixed(2)}`
+                  <div className="font-medium">
+                    ⚠️ {v.product_title ?? "Unknown Product"}
+                  </div>
+                  <div className="text-xs text-gray-500">{v.variant_title ?? ""}</div>
+                </td>
+                <td>{v.stock}</td>
+                <td>
+                  {v.days_since_last_sale === null
+                    ? "Never"
+                    : `${v.days_since_last_sale} days ago`}
+                </td>
+                <td>{v.qty_sold_window}</td>
+                <td>{fmtMoney(v.current_price)}</td>
+                <td>
+                  {v.recommended_action?.suggested_price !== null &&
+                  v.recommended_action?.suggested_price !== undefined
+                    ? fmtMoney(v.recommended_action.suggested_price)
                     : "—"}
                 </td>
               </tr>
@@ -161,7 +203,11 @@ export default async function Dashboard({
       <ul>
         <li>
           View pricing recommendations (
-          <a className="underline" href={`/api/recommendations?windowDays=${windowDays}`} target="_blank">
+          <a
+            className="underline"
+            href={`/api/recommendations?windowDays=${windowDays}`}
+            target="_blank"
+          >
             /api/recommendations?windowDays={windowDays}
           </a>
           )
@@ -175,7 +221,11 @@ export default async function Dashboard({
         </li>
         <li>
           Re-ingest last {windowDays}d (
-          <a className="underline" href={`/api/ingest/daily?days=${windowDays}`} target="_blank">
+          <a
+            className="underline"
+            href={`/api/ingest/daily?days=${windowDays}`}
+            target="_blank"
+          >
             /api/ingest/daily?days={windowDays}
           </a>
           )
